@@ -1,0 +1,21 @@
+name: Question / help
+description: Something is unclear or you need help getting started
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask away. No question is too basic.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you want to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to do? What have you already tried?

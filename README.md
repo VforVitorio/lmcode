@@ -18,6 +18,9 @@
 
 ---
 
+> [!WARNING]
+> **Honest disclaimer:** This is a personal side project. I'm not a LinkedIn AI guru with 47 certifications. I'm building this with [Claude Code](https://claude.ai/claude-code), so yes — there's probably some AI slop hiding somewhere in here. 🤖🫠 PRs welcome, judgement not so much.
+
 ---
 
 **lmcode** is a coding agent for your terminal that runs entirely on your machine using [LM Studio](https://lmstudio.ai) as the inference backend. Think Claude Code or Aider, but local, open source, and extensible via plugins and MCP servers.
