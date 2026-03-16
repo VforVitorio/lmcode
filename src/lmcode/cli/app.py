@@ -42,10 +42,10 @@ def main(
 # Sub-commands (imported here to register them)
 # ---------------------------------------------------------------------------
 
-from lmcode.cli.chat import app as chat_app          # noqa: E402
-from lmcode.cli.mcp import app as mcp_app            # noqa: E402
-from lmcode.cli.run import run                       # noqa: E402
-from lmcode.cli.session import app as session_app    # noqa: E402
+from lmcode.cli.chat import app as chat_app  # noqa: E402
+from lmcode.cli.mcp import app as mcp_app  # noqa: E402
+from lmcode.cli.run import run  # noqa: E402
+from lmcode.cli.session import app as session_app  # noqa: E402
 
 app.add_typer(chat_app, name="chat", help="Start an interactive chat session.")
 app.add_typer(session_app, name="session", help="View and manage past sessions.")

@@ -19,7 +19,9 @@
 ---
 
 > [!WARNING]
-> **Honest disclaimer:** This is a personal side project. I'm not a LinkedIn AI guru with 47 certifications. I'm building this with [Claude Code](https://claude.ai/claude-code), so yes — there's probably some AI slop hiding somewhere in here. 🤖🫠 PRs welcome, judgement not so much.
+> **Honest disclaimer:** This is a personal side project. I'm not a LinkedIn AI guru with 47 certifications. I'm building this with [Claude Code](https://claude.ai/claude-code), so yes — there's probably some AI slop hiding somewhere in here. 🤖🫠
+>
+> PRs welcome. Learning out loud and figuring things out as I go also welcome. Stack Overflow-style "this question doesn't belong here, marked as duplicate of a 2009 thread" energy — not so much.
 
 ---
 
