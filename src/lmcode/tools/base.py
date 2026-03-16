@@ -10,6 +10,7 @@ from typing import Any
 @dataclass
 class ToolResult:
     """Return type for all lmcode tools."""
+
     output: str
     success: bool = True
     metadata: dict[str, Any] | None = None
