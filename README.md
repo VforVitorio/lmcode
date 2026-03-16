@@ -1,11 +1,22 @@
-# lmcode
+<p align="center">
+  <img src="assets/lmcode.svg" alt="lmcode" width="220" />
+</p>
 
-> A local coding agent CLI powered by LM Studio. Open source, fully private, no cloud required.
+<h1 align="center">lmcode</h1>
 
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/yourusername/lmcode)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![uv](https://img.shields.io/badge/managed%20with-uv-blueviolet)](https://docs.astral.sh/uv)
+<p align="center">
+  A local coding agent CLI powered by LM Studio.<br/>
+  Open source, fully private, no cloud required.
+</p>
+
+<p align="center">
+  <a href="https://github.com/VforVitorio/lmcode"><img src="https://img.shields.io/badge/status-in%20development-orange" alt="status" /></a>
+  <a href="https://www.python.org"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="python" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license" /></a>
+  <a href="https://docs.astral.sh/uv"><img src="https://img.shields.io/badge/managed%20with-uv-blueviolet" alt="uv" /></a>
+</p>
+
+---
 
 ---
 
@@ -78,7 +89,7 @@ pip install lmcode
 
 > Not published to PyPI yet. Install from source in the meantime:
 > ```bash
-> git clone https://github.com/yourusername/lmcode
+> git clone https://github.com/VforVitorio/lmcode
 > cd lmcode
 > uv sync
 > uv run lmcode --help
@@ -176,7 +187,7 @@ This project is in early development. Contributions, feedback, and ideas are ver
 - All code is formatted with `ruff` and type-checked with `mypy`
 
 ```bash
-git clone https://github.com/yourusername/lmcode
+git clone https://github.com/VforVitorio/lmcode
 cd lmcode
 uv sync --all-extras
 uv run pytest
