@@ -80,3 +80,9 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def reset_settings() -> None:
+    """Discard the cached singleton so the next get_settings() call reloads from disk."""
+    global _settings
+    _settings = None

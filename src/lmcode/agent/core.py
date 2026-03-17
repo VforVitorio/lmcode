@@ -374,6 +374,60 @@ def _print_connection_error(base_url: str) -> None:
     )  # noqa: E501
 
 
+# ---------------------------------------------------------------------------
+# Token-aware file byte limit (Issue #2)
+# ---------------------------------------------------------------------------
+
+# Mapping of context-window keywords (lowercase) to token count.
+_CTX_HINTS: list[tuple[str, int]] = [
+    ("128k", 131_072),
+    ("64k", 65_536),
+    ("32k", 32_768),
+    ("16k", 16_384),
+    ("8k", 8_192),
+    ("4k", 4_096),
+]
+
+# Rough byte-per-token estimate and fraction of context to use for file content.
+_BYTES_PER_TOKEN: int = 4
+_FILE_CONTENT_FRACTION: float = 0.20
+_MIN_FILE_BYTES: int = 50_000
+_MAX_FILE_BYTES: int = 500_000
+
+
+def _ctx_len_from_name(model_id: str) -> int | None:
+    """Extract a context-length hint from *model_id* by looking for size suffixes.
+
+    Returns the matched token count, or None if no hint is found.
+    """
+    lower = model_id.lower()
+    for hint, tokens in _CTX_HINTS:
+        if hint in lower:
+            return tokens
+    return None
+
+
+async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
+    """Query the model's actual context length and derive a file-byte cap.
+
+    Queries ``model.get_context_length()`` first; on failure, falls back to
+    a heuristic derived from the model identifier, then to the config default.
+
+    The formula is:  clamp(ctx_tokens * bytes_per_token * fraction, 50_000, 500_000)
+    """
+    ctx_len: int | None = None
+    try:
+        ctx_len = await model.get_context_length()
+    except Exception:
+        ctx_len = _ctx_len_from_name(model_id)
+
+    if ctx_len is not None and ctx_len > 0:
+        computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
+        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES))
+
+    return get_settings().agent.max_file_bytes
+
+
 def run_chat(model_id: str = "auto") -> None:
     """Synchronous entry point — runs the async Agent.run() via asyncio."""
     asyncio.run(Agent(model_id).run())
