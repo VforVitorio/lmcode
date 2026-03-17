@@ -175,9 +175,7 @@ class Agent:
 
         if cmd == "/model":
             console.print(f"[{TEXT_MUTED}]current model: {self._model_display}[/]")
-            console.print(
-                f"[{TEXT_MUTED}]to switch model, restart with: lmcode --model <id>[/]\n"
-            )
+            console.print(f"[{TEXT_MUTED}]to switch model, restart with: lmcode --model <id>[/]\n")
             return True
 
         if cmd == "/mode":
