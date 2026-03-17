@@ -12,6 +12,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
+from rich.text import Text
 
 from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
@@ -33,26 +34,41 @@ at file contents.
 # Slash commands
 # ---------------------------------------------------------------------------
 
-_SLASH_COMMANDS: dict[str, str] = {
-    "/help": "Show this help message",
-    "/clear": "Clear conversation history",
-    "/mode [ask|auto|strict]": "Show or change the permission mode",
-    "/exit": "Exit lmcode",
-}
+_SLASH_COMMANDS: list[tuple[str, str]] = [
+    ("/help", "Show this help message"),
+    ("/clear", "Clear conversation history"),
+    ("/mode [ask|auto|strict]", "Show or change the permission mode"),
+    ("/model", "Show the current model"),
+    ("/exit", "Exit lmcode"),
+]
 
 
 def _print_help() -> None:
-    """Print the slash-command reference table."""
-    console.print(f"\n[{ACCENT_BRIGHT}]available commands[/]")
-    for cmd, desc in _SLASH_COMMANDS.items():
-        console.print(f"  [{TEXT_MUTED}]{cmd:<28}[/] {desc}")
+    """Print the slash-command reference table.
+
+    Uses rich.Text per row so square brackets in command signatures are
+    treated as literal characters, not Rich markup tags.
+    """
+    console.print(f"\n[{ACCENT_BRIGHT}]in-session commands[/]")
+    for cmd, desc in _SLASH_COMMANDS:
+        row = Text()
+        row.append(f"  {cmd:<30}", style=TEXT_MUTED)
+        row.append(desc)
+        console.print(row)
+    footer = Text()
+    footer.append(
+        "\n  run lmcode --help outside the session for CLI subcommands and flags",
+        style=TEXT_MUTED,
+    )
+    console.print(footer)
     console.print()
 
 
 def _print_startup_tip() -> None:
     """Print a one-line tip shown once at session start."""
     console.print(
-        f"[{TEXT_MUTED}]tip: Tab cycles mode  ·  /help for commands  ·  /exit to quit[/]\n"
+        f"[{TEXT_MUTED}]tip: Tab cycles mode  ·  /help for commands"
+        f"  ·  lmcode --help for CLI flags[/]\n"
     )
 
 
@@ -155,6 +171,13 @@ class Agent:
         if cmd == "/clear":
             self._chat = None
             console.print(f"[{TEXT_MUTED}]conversation cleared[/]\n")
+            return True
+
+        if cmd == "/model":
+            console.print(f"[{TEXT_MUTED}]current model: {self._model_display}[/]")
+            console.print(
+                f"[{TEXT_MUTED}]to switch model, restart with: lmcode --model <id>[/]\n"
+            )
             return True
 
         if cmd == "/mode":
