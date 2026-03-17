@@ -10,6 +10,7 @@ from typing import Any
 import lmstudio as lms
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
+from rich.align import Align
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
@@ -245,8 +246,8 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> str:
-        """Send one user message, run the tool loop, and return the response text.
+    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
+        """Send one user message, run the tool loop, return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
         update our history with the final assistant response afterwards.
@@ -275,8 +276,12 @@ class Agent:
                     text = str(parts)
                 captured.append(text)
 
-        def _on_prediction_completed(_result: Any) -> None:
-            """No-op stats capture — token count is shown live in the spinner."""
+        stats_capture: list[Any] = []
+
+        def _on_prediction_completed(result: Any) -> None:
+            """Capture per-round PredictionResult.stats for the post-response summary."""
+            if hasattr(result, "stats"):
+                stats_capture.append(result.stats)
 
         tok_count: list[int] = [0]
 
@@ -287,7 +292,7 @@ class Agent:
                 live.update(Spinner("dots", text=f" thinking…  {tok_count[0]} tok"))
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
-        await model.act(
+        act_result = await model.act(
             chat,
             tools=tools,
             on_message=_on_message,
@@ -297,7 +302,8 @@ class Agent:
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
-        return response_text
+        elapsed = getattr(act_result, "total_time_seconds", None)
+        return response_text, _build_stats_line(stats_capture, elapsed)
 
     async def run(self) -> None:
         """Connect to LM Studio and run the interactive chat loop.
@@ -349,9 +355,12 @@ class Agent:
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response = await self._run_turn(model, user_input, live=live)
+                        response, stats = await self._run_turn(model, user_input, live=live)
 
-                    console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}\n")
+                    console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}")
+                    if stats:
+                        console.print(Align.right(Text(stats, style=TEXT_MUTED)))
+                    console.print()
 
         except SystemExit:
             pass
@@ -383,6 +392,33 @@ async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
         raise RuntimeError("No models are loaded in LM Studio. Load a model first, then retry.")
     first = loaded[0]
     return first, first.identifier
+
+
+def _build_stats_line(stats_list: list[Any], total_seconds: float | None) -> str:
+    """Build a compact stats string from accumulated PredictionResult.stats objects.
+
+    Returns an empty string when no stats are available so the caller can
+    skip printing entirely.  Format: '↑ 1.2k  ↓ 384  ·  45 tok/s  ·  2.3s'
+    """
+    if not stats_list:
+        return ""
+
+    def _fmt(n: int) -> str:
+        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+    prompt_tok = sum(getattr(s, "prompt_tokens_count", 0) or 0 for s in stats_list)
+    pred_tok = sum(getattr(s, "predicted_tokens_count", 0) or 0 for s in stats_list)
+    tok_per_sec: float = getattr(stats_list[-1], "tokens_per_second", 0) or 0
+
+    parts: list[str] = []
+    if prompt_tok or pred_tok:
+        parts.append(f"↑ {_fmt(prompt_tok)}  ↓ {_fmt(pred_tok)}")
+    if tok_per_sec > 0:
+        parts.append(f"{tok_per_sec:.0f} tok/s")
+    if total_seconds and total_seconds > 0:
+        parts.append(f"{total_seconds:.1f}s")
+
+    return "  ·  ".join(parts)
 
 
 def _print_connection_error(base_url: str) -> None:

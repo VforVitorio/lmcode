@@ -101,9 +101,10 @@ async def test_run_turn_returns_response_text() -> None:
     mock_model = _make_mock_model("here is the answer")
 
     with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
-        response = await agent._run_turn(mock_model, "hello")
+        response, stats = await agent._run_turn(mock_model, "hello")
 
     assert response == "here is the answer"
+    assert isinstance(stats, str)
 
 
 @pytest.mark.asyncio
