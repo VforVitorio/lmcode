@@ -153,9 +153,7 @@ async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
 
     loaded = await client.llm.list_loaded()
     if not loaded:
-        raise RuntimeError(
-            "No models are loaded in LM Studio. Load a model first, then retry."
-        )
+        raise RuntimeError("No models are loaded in LM Studio. Load a model first, then retry.")
     first = loaded[0]
     return first, first.identifier
 
@@ -163,7 +161,9 @@ async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
 def _print_connection_error(base_url: str) -> None:
     """Print a user-friendly message when LM Studio cannot be reached."""
     console.print(f"[{ERROR}]error:[/] cannot connect to LM Studio at {base_url}")
-    console.print(f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]")  # noqa: E501
+    console.print(
+        f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]"
+    )  # noqa: E501
 
 
 def run_chat(model_id: str = "auto") -> None:
