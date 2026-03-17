@@ -10,8 +10,9 @@ from lmcode import __version__
 app = typer.Typer(
     name="lmcode",
     help="A local coding agent powered by LM Studio.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     pretty_exceptions_enable=False,
+    invoke_without_command=True,
 )
 
 console = Console()
@@ -26,6 +27,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -37,6 +39,10 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ) -> None:
     """lmcode — local coding agent powered by LM Studio."""
+    if ctx.invoked_subcommand is None:
+        from lmcode.cli.chat import chat
+
+        chat(model="auto", max_rounds=50)
 
 
 # ---------------------------------------------------------------------------
@@ -44,11 +50,13 @@ def main(
 # ---------------------------------------------------------------------------
 
 from lmcode.cli.chat import app as chat_app  # noqa: E402
+from lmcode.cli.config_cmd import config_app  # noqa: E402
 from lmcode.cli.mcp import app as mcp_app  # noqa: E402
 from lmcode.cli.run import run  # noqa: E402
 from lmcode.cli.session import app as session_app  # noqa: E402
 
 app.add_typer(chat_app, name="chat", help="Start an interactive chat session.")
+app.add_typer(config_app, name="config", help="Read and write lmcode settings.")
 app.add_typer(session_app, name="session", help="View and manage past sessions.")
 app.add_typer(mcp_app, name="mcp", help="Manage MCP server connections.")
 app.command("run")(run)
