@@ -17,6 +17,13 @@ _ACCENT = "#a78bfa"
 _SUCCESS = "#10b981"
 _MUTED = "#6b7280"
 
+_MODE_DESCRIPTIONS: dict[str, str] = {
+    "ask": "confirms before each tool call",
+    "auto": "tools run automatically",
+    "strict": "no tools — pure chat only",
+}
+"""Human-readable one-liner for each permission mode, printed on Tab switch."""
+
 
 def next_mode(current: str) -> str:
     """Return the next mode in the cycle: ask → auto → strict → ask."""
