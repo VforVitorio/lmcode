@@ -69,15 +69,32 @@ class Agent:
     async def _run_turn(self, model: Any, user_input: str) -> str:
         """Send one user message, run the tool loop, and return the response text.
 
-        Adds both the user message and the assistant response to the chat
-        history so subsequent turns have full context.
+        model.act() works on an internal copy of the chat, so we manually
+        update our history with the final assistant response afterwards.
+        The response text is captured via the on_message callback because
+        ActResult only carries timing metadata, not the actual content.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
 
-        result = await model.act(chat, tools=self._tools)
+        captured: list[str] = []
 
-        response_text = result.content if hasattr(result, "content") else str(result)
+        def _on_message(msg: Any) -> None:
+            """Capture the final AssistantResponse text.
+
+            msg.content is a list of TextData objects — join their .text fields.
+            """
+            if hasattr(msg, "content") and hasattr(msg, "role"):
+                parts = msg.content
+                if isinstance(parts, list):
+                    text = "".join(p.text for p in parts if hasattr(p, "text"))
+                else:
+                    text = str(parts)
+                captured.append(text)
+
+        await model.act(chat, tools=self._tools, on_message=_on_message)
+
+        response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         return response_text
 
@@ -91,8 +108,8 @@ class Agent:
 
         try:
             async with lms.AsyncClient() as client:
-                model = await client.llm.model(self._model_id)
-                console.print(f"[{SUCCESS}]●[/]  connected — model: [{ACCENT}]{self._model_id}[/]\n")
+                model, resolved_id = await _get_model(client, self._model_id)
+                console.print(f"[{SUCCESS}]●[/]  connected — model: [{ACCENT}]{resolved_id}[/]\n")
 
                 while True:
                     try:
@@ -123,6 +140,24 @@ class Agent:
                 raise
         except KeyboardInterrupt:
             console.print(f"\n[{TEXT_MUTED}]interrupted[/]")
+
+
+async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
+    """Return a (model_handle, resolved_identifier) tuple.
+
+    When model_id is 'auto', picks the first model currently loaded in
+    LM Studio. Raises RuntimeError if no models are loaded.
+    """
+    if model_id != "auto":
+        return await client.llm.model(model_id), model_id
+
+    loaded = await client.llm.list_loaded()
+    if not loaded:
+        raise RuntimeError(
+            "No models are loaded in LM Studio. Load a model first, then retry."
+        )
+    first = loaded[0]
+    return first, first.identifier
 
 
 def _print_connection_error(base_url: str) -> None:

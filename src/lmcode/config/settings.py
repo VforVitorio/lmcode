@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 from lmcode.config.paths import config_file, sessions_dir
 
@@ -52,6 +57,18 @@ class Settings(BaseSettings):
     lmstudio: LMStudioSettings = Field(default_factory=LMStudioSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     session: SessionSettings = Field(default_factory=SessionSettings)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Load settings from: code defaults → config.toml → env vars."""
+        return (init_settings, TomlConfigSettingsSource(settings_cls), env_settings)
 
 
 _settings: Settings | None = None
