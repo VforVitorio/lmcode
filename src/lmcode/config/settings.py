@@ -30,6 +30,7 @@ class AgentSettings(BaseSettings):
     max_rounds: int = 50
     permission_mode: Literal["ask", "auto", "strict"] = "ask"
     timeout_seconds: int = 30
+    max_file_bytes: int = 100_000  # ~100 KB; see issue #2 for token-aware improvement
 
 
 class SessionSettings(BaseSettings):
