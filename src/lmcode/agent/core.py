@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
+import random
 from collections.abc import Callable
 from typing import Any
 
@@ -12,6 +14,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from rich.align import Align
 from rich.console import Console
+from rich.console import Group as RenderGroup
 from rich.live import Live
 from rich.rule import Rule
 from rich.spinner import Spinner
@@ -33,14 +36,31 @@ from lmcode.ui.status import (
 
 console = Console()
 
-# Spinner style used for the thinking indicator.  Configurable via issue #20.
+# Spinner style used for the thinking indicator.  Configurable via UISettings.
 _SPINNER = "arc"
+
+# Rotating tips shown below the spinner during model inference.
+_TIPS: list[str] = [
+    "use /verbose to hide tool calls",
+    "Tab cycles ask → auto → strict mode",
+    "/clear resets the conversation history",
+    "drop a LMCODE.md in your project root to give context",
+    "/mode strict disables all tools — pure chat",
+    "/model shows the current loaded model",
+    "run lmcode --help for all CLI flags",
+    "/stats toggles the token count display",
+]
 
 _BASE_SYSTEM_PROMPT = """\
 You are lmcode, a local AI coding agent. You help users understand, write,
 debug, and refactor code. Be concise and direct.
-When you need to inspect files, always use the available tools — never guess
-at file contents.
+
+Only call a tool when the user's request explicitly requires reading or
+writing files, running a shell command, or searching through code.
+For greetings, general questions, explanations, or anything you can answer
+from your own knowledge — respond directly without calling any tools.
+When you do need to inspect a file, always use the available tools rather
+than guessing at its contents.
 """
 
 # ---------------------------------------------------------------------------
@@ -53,6 +73,10 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
     ("/model", "Show the current model"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
+    ("/tips", "Toggle rotating tips shown during thinking"),
+    ("/stats", "Toggle token stats shown after each response"),
+    ("/tools", "List all available tools with their signatures"),
+    ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
@@ -84,6 +108,46 @@ def _print_startup_tip() -> None:
     tip = "Tab cycles mode  ·  /help for commands  ·  /verbose to hide tool calls"
     console.print(Rule(tip, style=f"dim {ACCENT}"))
     console.print()
+
+
+def _format_tool_signature(fn: Callable[..., Any]) -> str:
+    """Return a compact signature string for a tool callable.
+
+    Format: 'param: type = default, ...' with return annotation if present.
+    Uses inspect.signature so the output reflects the actual function parameters.
+    """
+    sig = inspect.signature(fn)
+    params: list[str] = []
+    for name, param in sig.parameters.items():
+        annotation = (
+            param.annotation.__name__
+            if hasattr(param.annotation, "__name__")
+            else str(param.annotation)
+            if param.annotation is not inspect.Parameter.empty
+            else ""
+        )
+        if param.default is not inspect.Parameter.empty:
+            default_repr = repr(param.default)
+            part = (
+                f"{name}: {annotation} = {default_repr}"
+                if annotation
+                else f"{name} = {default_repr}"
+            )
+        else:
+            part = f"{name}: {annotation}" if annotation else name
+        params.append(part)
+    param_str = ", ".join(params)
+    ret = sig.return_annotation
+    ret_str = (
+        ret.__name__
+        if hasattr(ret, "__name__")
+        else str(ret)
+        if ret is not inspect.Parameter.empty
+        else ""
+    )
+    if ret_str and ret_str != "empty":
+        return f"{param_str} → {ret_str}"
+    return param_str
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +238,8 @@ class Agent:
         self._model_display: str = ""
         self._verbose: bool = True
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
+        self._show_tips: bool = get_settings().ui.show_tips
+        self._show_stats: bool = get_settings().ui.show_stats
 
     def _init_chat(self) -> lms.Chat:
         """Create and return a fresh Chat with the current system prompt."""
@@ -242,6 +308,55 @@ class Agent:
                 console.print(f"[{TEXT_MUTED}]verbose off[/]\n")
             return True
 
+        if cmd == "/tips":
+            self._show_tips = not self._show_tips
+            state = "on" if self._show_tips else "off"
+            console.print(f"[{TEXT_MUTED}]tips {state}[/]\n")
+            return True
+
+        if cmd == "/stats":
+            self._show_stats = not self._show_stats
+            state = "on" if self._show_stats else "off"
+            console.print(f"[{TEXT_MUTED}]stats {state}[/]\n")
+            return True
+
+        if cmd == "/tools":
+            console.print(f"\n[{ACCENT_BRIGHT}]available tools[/]")
+            for fn in self._tools:
+                sig = _format_tool_signature(fn)
+                row = Text()
+                row.append(f"  {fn.__name__:<14}", style=TEXT_MUTED)
+                row.append(sig)
+                console.print(row)
+            console.print()
+            return True
+
+        if cmd == "/status":
+            turns = (
+                len(self._chat._history) // 2
+                if self._chat and hasattr(self._chat, "_history")
+                else 0
+            )
+            verbose_state = "on" if self._verbose else "off"
+            tips_state = "on" if self._show_tips else "off"
+            stats_state = "on" if self._show_stats else "off"
+            console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
+            rows: list[tuple[str, str]] = [
+                ("model", self._model_display or "(none)"),
+                ("mode", self._mode),
+                ("verbose", verbose_state),
+                ("tips", tips_state),
+                ("stats", stats_state),
+                ("turns", str(turns)),
+            ]
+            for label, value in rows:
+                row = Text()
+                row.append(f"  {label:<10}", style=TEXT_MUTED)
+                row.append(value)
+                console.print(row)
+            console.print()
+            return True
+
         if cmd == "/version":
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
@@ -249,7 +364,9 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
+    async def _run_turn(
+        self, model: Any, user_input: str, live: Any = None, tip: str | None = None
+    ) -> tuple[str, str]:
         """Send one user message, run the tool loop, return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
@@ -258,8 +375,10 @@ class Agent:
         ActResult only carries timing metadata, not the actual content.
         If *live* is a Rich Live instance, on_prediction_fragment updates it
         with a live token counter: '⠋ thinking…  42 tok'.
+        If *tip* is provided, it is shown as a second line below the spinner.
         When self._verbose is True, each tool is wrapped to print its call
         and result before being passed to model.act().
+        Tool call messages update the spinner with the active file path.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
@@ -267,11 +386,22 @@ class Agent:
         captured: list[str] = []
 
         def _on_message(msg: Any) -> None:
-            """Capture the final AssistantResponse text.
+            """Update spinner with active file on tool calls; capture assistant text.
 
-            msg.content is a list of TextData objects — join their .text fields.
+            For tool call messages, extracts the path argument and updates the
+            Live spinner label to show which file is being read or written.
+            For assistant messages, joins content parts and stores in captured.
             """
-            if hasattr(msg, "content") and hasattr(msg, "role"):
+            if hasattr(msg, "tool_calls") and msg.tool_calls and live is not None:
+                for tc in msg.tool_calls:
+                    path = (tc.arguments or {}).get("path", "")
+                    if path:
+                        label = f" {tc.name} {path[-40:]}"
+                        rows: list[Any] = [Spinner(_SPINNER, text=label)]
+                        if tip:
+                            rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
+                        live.update(RenderGroup(*rows))
+            elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
                     text = "".join(p.text for p in parts if hasattr(p, "text"))
@@ -289,10 +419,13 @@ class Agent:
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens and update the Live spinner if provided."""
+            """Count generated tokens and update the Live spinner with tip if provided."""
             tok_count[0] += 1
             if live is not None:
-                live.update(Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok"))
+                rows: list[Any] = [Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok")]
+                if tip:
+                    rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
+                live.update(RenderGroup(*rows))
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
         act_result = await model.act(
@@ -352,16 +485,27 @@ class Agent:
                         self._handle_slash(stripped)
                         continue
 
-                    with Live(
+                    # Separator rule echoing the user's message (Issue #28).
+                    label = stripped[:60] + ("…" if len(stripped) > 60 else "")
+                    console.print(Rule(label, style=f"dim {ACCENT}"))
+
+                    tip = random.choice(_TIPS) if self._show_tips else None
+                    initial: Any = RenderGroup(
                         Spinner(_SPINNER, text=" thinking…"),
+                        Text(f"  {tip}", style=f"dim {ACCENT}") if tip else Text(""),
+                    )
+                    with Live(
+                        initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(model, user_input, live=live)
+                        response, stats = await self._run_turn(
+                            model, user_input, live=live, tip=tip
+                        )
 
                     console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}")
-                    if stats:
+                    if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
 

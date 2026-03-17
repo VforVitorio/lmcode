@@ -45,6 +45,14 @@ class SessionSettings(BaseSettings):
     sessions_dir: Path = Field(default_factory=sessions_dir)
 
 
+class UISettings(BaseSettings):
+    """Display and interaction settings."""
+
+    spinner: str = "arc"  # Rich spinner name
+    show_tips: bool = True  # show rotating tips during thinking
+    show_stats: bool = True  # show token stats after response
+
+
 class Settings(BaseSettings):
     """Root settings object; loaded from config.toml and LMCODE_ env vars."""
 
@@ -57,6 +65,7 @@ class Settings(BaseSettings):
     lmstudio: LMStudioSettings = Field(default_factory=LMStudioSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     session: SessionSettings = Field(default_factory=SessionSettings)
+    ui: UISettings = Field(default_factory=UISettings)
 
     @classmethod
     def settings_customise_sources(
