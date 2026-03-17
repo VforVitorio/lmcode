@@ -169,6 +169,7 @@ class Agent:
         self._mode: str = "ask"
         self._model_display: str = ""
         self._verbose: bool = False
+        self._max_file_bytes: int = get_settings().agent.max_file_bytes
 
     def _init_chat(self) -> lms.Chat:
         """Create and return a fresh Chat with the current system prompt."""
@@ -212,12 +213,19 @@ class Agent:
                 requested = parts[1].lower()
                 if requested in MODES:
                     self._mode = requested
-                    console.print(f"[{TEXT_MUTED}]mode → {self._mode}[/]\n")
+                    desc = _MODE_DESCRIPTIONS.get(self._mode, "")
+                    console.print(f"[{TEXT_MUTED}]→ {self._mode}  ({desc})[/]\n")
                 else:
                     valid = ", ".join(MODES)
                     console.print(f"[{ERROR}]unknown mode '{requested}'[/] — valid: {valid}\n")
             else:
-                console.print(f"[{TEXT_MUTED}]current mode: {self._mode}[/]\n")
+                desc = _MODE_DESCRIPTIONS.get(self._mode, "")
+                console.print(f"[{TEXT_MUTED}]current mode: {self._mode}  ({desc})[/]\n")
+                console.print(
+                    f"[{TEXT_MUTED}]  ask    confirms before each tool call[/]\n"
+                    f"[{TEXT_MUTED}]  auto   tools run automatically[/]\n"
+                    f"[{TEXT_MUTED}]  strict no tools — pure chat only[/]\n"
+                )
             return True
 
         if cmd == "/verbose":
@@ -282,10 +290,8 @@ class Agent:
         settings = get_settings()
 
         def _cycle_mode() -> None:
-            """Advance to the next mode and print a one-liner describing it."""
+            """Advance to the next mode in-place (prompt redraws via invalidate)."""
             self._mode = next_mode(self._mode)
-            desc = _MODE_DESCRIPTIONS.get(self._mode, "")
-            console.print(f"\n[{TEXT_MUTED}]→ {self._mode}  ({desc})[/]")
 
         session = _make_session(cycle_mode=_cycle_mode)
 
@@ -293,6 +299,8 @@ class Agent:
             async with lms.AsyncClient() as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
+                self._max_file_bytes = await _compute_max_file_bytes(model, resolved_id)
+                get_settings().agent.max_file_bytes = self._max_file_bytes
                 console.print(build_status_line(resolved_id) + "\n")
                 _print_startup_tip()
 
