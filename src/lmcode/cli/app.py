@@ -10,8 +10,9 @@ from lmcode import __version__
 app = typer.Typer(
     name="lmcode",
     help="A local coding agent powered by LM Studio.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     pretty_exceptions_enable=False,
+    invoke_without_command=True,
 )
 
 console = Console()
@@ -26,6 +27,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -37,6 +39,10 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ) -> None:
     """lmcode — local coding agent powered by LM Studio."""
+    if ctx.invoked_subcommand is None:
+        from lmcode.cli.chat import chat
+
+        chat(model="auto", max_rounds=50)
 
 
 # ---------------------------------------------------------------------------
