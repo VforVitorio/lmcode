@@ -7,6 +7,7 @@ Palette from src/lmcode/ui/colors.py
 
 from __future__ import annotations
 
+import shutil
 import sys
 
 from rich.align import Align
@@ -19,11 +20,9 @@ from lmcode.ui.colors import (
     ACCENT_BRIGHT,
     BORDER,
     ERROR,
-    INFO,
     SUCCESS,
     TEXT_MUTED,
     TEXT_PRIMARY,
-    WARNING,
 )
 
 # ---------------------------------------------------------------------------
@@ -77,7 +76,6 @@ def _status_dot(ok: bool) -> tuple[str, str]:
 def get_banner(
     version: str,
     model: str = "",
-    mode: str = "ask",
     lmstudio_connected: bool = False,
 ) -> Panel:
     """
@@ -86,7 +84,6 @@ def get_banner(
     Args:
         version: lmcode version string
         model: loaded model name (empty = unknown)
-        mode: permission mode (ask / auto / strict)
         lmstudio_connected: whether LM Studio is reachable
     """
     content = Text(justify="center", no_wrap=True)
@@ -113,12 +110,6 @@ def get_banner(
         content.append(model, style=ACCENT)
 
     content.append("  ·  ", style=BORDER)
-
-    # Permission mode badge
-    mode_colors = {"ask": WARNING, "auto": INFO, "strict": ERROR}
-    content.append(f"{mode} mode", style=mode_colors.get(mode, TEXT_MUTED))
-
-    content.append("  ·  ", style=BORDER)
     content.append(f"v{version}\n", style=TEXT_MUTED)
 
     return Panel(
@@ -128,16 +119,56 @@ def get_banner(
     )
 
 
+def _print_compact_banner(
+    console: Console,
+    version: str,
+    model: str,
+    lmstudio_connected: bool,
+) -> None:
+    """Print a narrow-terminal-friendly banner with no Panel or ASCII art.
+
+    Used when the terminal is fewer than 90 columns wide.  Two styled lines:
+      lmcode  ─►  local coding agent
+      ● LM Studio connected  ·  model  ·  v0.1.0
+    """
+    line1 = Text()
+    line1.append("  lmcode", style=f"bold {ACCENT}")
+    line1.append("  ─►  ", style=f"bold {ACCENT_BRIGHT}")
+    line1.append("local coding agent", style=TEXT_MUTED)
+    console.print(line1)
+
+    line2 = Text()
+    dot, dot_style = _status_dot(lmstudio_connected)
+    line2.append(f"  {dot} ", style=dot_style)
+    line2.append(
+        "LM Studio connected" if lmstudio_connected else "LM Studio not found",
+        style=TEXT_MUTED,
+    )
+    if model:
+        line2.append("  ·  ", style=BORDER)
+        line2.append(model, style=ACCENT)
+    line2.append("  ·  ", style=BORDER)
+    line2.append(f"v{version}", style=TEXT_MUTED)
+    console.print(line2)
+
+
 def print_banner(
     version: str,
     model: str = "",
-    mode: str = "ask",
     lmstudio_connected: bool = False,
 ) -> None:
-    """Print the banner to stdout."""
+    """Print the banner to stdout.
+
+    Detects terminal width and chooses between a full Panel with ASCII art
+    (width >= 90) and a compact two-line fallback (width < 90).
+    """
     # Ensure stdout uses UTF-8 so Unicode block characters render correctly
     # on Windows terminals that default to cp1252.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     console = Console(legacy_windows=False)
-    console.print(get_banner(version, model, mode, lmstudio_connected))
+    width = shutil.get_terminal_size((100, 24)).columns
+    if width >= 90:
+        console.print(get_banner(version, model, lmstudio_connected))
+    else:
+        _print_compact_banner(console, version, model, lmstudio_connected)

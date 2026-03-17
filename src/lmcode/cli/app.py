@@ -50,11 +50,13 @@ def main(
 # ---------------------------------------------------------------------------
 
 from lmcode.cli.chat import app as chat_app  # noqa: E402
+from lmcode.cli.config_cmd import config_app  # noqa: E402
 from lmcode.cli.mcp import app as mcp_app  # noqa: E402
 from lmcode.cli.run import run  # noqa: E402
 from lmcode.cli.session import app as session_app  # noqa: E402
 
 app.add_typer(chat_app, name="chat", help="Start an interactive chat session.")
+app.add_typer(config_app, name="config", help="Read and write lmcode settings.")
 app.add_typer(session_app, name="session", help="View and manage past sessions.")
 app.add_typer(mcp_app, name="mcp", help="Manage MCP server connections.")
 app.command("run")(run)

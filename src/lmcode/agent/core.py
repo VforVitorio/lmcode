@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
+import random
 from collections.abc import Callable
 from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
+from rich.align import Align
 from rich.console import Console
+from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
@@ -20,7 +25,7 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED
+from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED, WARNING
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -31,11 +36,51 @@ from lmcode.ui.status import (
 
 console = Console()
 
+
+def _rewrite_as_history(text: str) -> None:
+    """Overwrite the just-submitted prompt line with a dimmed history entry.
+
+    Uses ANSI cursor-up + clear-line so the full '● lmcode (model) [mode] ›'
+    prompt is replaced by a minimal muted '›  text' style, keeping the
+    scrollback visually uncluttered.  Assumes the input fit on a single line,
+    which is true for any terminal ≥ 80 cols and messages under ~35 chars.
+    """
+    console.file.write("\x1b[1A\r\x1b[2K")
+    console.file.flush()
+    row = Text()
+    row.append("  ›  ", style=TEXT_MUTED)
+    row.append(text, style=f"dim {TEXT_MUTED}")
+    console.print(row)
+
+
+# Spinner style used for the thinking indicator.  Configurable via UISettings.
+_SPINNER = "dots"
+
+# Rotating tips shown below the spinner during model inference.
+_TIPS: list[str] = [
+    "use /verbose to hide tool calls",
+    "Tab cycles ask → auto → strict mode",
+    "/clear resets the conversation history",
+    "drop a LMCODE.md in your project root to give context",
+    "/mode strict disables all tools — pure chat",
+    "/model shows the current loaded model",
+    "run lmcode --help for all CLI flags",
+    "/stats toggles the token count display",
+]
+
 _BASE_SYSTEM_PROMPT = """\
 You are lmcode, a local AI coding agent. You help users understand, write,
 debug, and refactor code. Be concise and direct.
-When you need to inspect files, always use the available tools — never guess
-at file contents.
+
+Only call a tool when the user's request explicitly requires reading or
+writing files, running a shell command, or searching through code.
+For greetings, general questions, explanations, or anything you can answer
+from your own knowledge — respond directly without calling any tools.
+When you do need to inspect a file, always use the available tools rather
+than guessing at its contents.
+
+Never output raw XML, HTML tags, JSON schemas, or tool definitions in your
+responses. Always reply in plain text or Markdown.
 """
 
 # ---------------------------------------------------------------------------
@@ -48,6 +93,10 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
     ("/model", "Show the current model"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
+    ("/tips", "Toggle rotating tips shown during thinking"),
+    ("/stats", "Toggle token stats shown after each response"),
+    ("/tools", "List all available tools with their signatures"),
+    ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
@@ -75,11 +124,50 @@ def _print_help() -> None:
 
 
 def _print_startup_tip() -> None:
-    """Print a one-line tip shown once at session start."""
-    console.print(
-        f"[{TEXT_MUTED}]tip: Tab cycles mode  ·  /help for commands"
-        f"  ·  lmcode --help for CLI flags[/]\n"
+    """Print a styled tip rule shown once at session start."""
+    tip = "Tab cycles mode  ·  /help for commands  ·  /verbose to hide tool calls"
+    console.print(Rule(tip, style=f"dim {ACCENT}"))
+    console.print()
+
+
+def _format_tool_signature(fn: Callable[..., Any]) -> str:
+    """Return a compact signature string for a tool callable.
+
+    Format: 'param: type = default, ...' with return annotation if present.
+    Uses inspect.signature so the output reflects the actual function parameters.
+    """
+    sig = inspect.signature(fn)
+    params: list[str] = []
+    for name, param in sig.parameters.items():
+        annotation = (
+            param.annotation.__name__
+            if hasattr(param.annotation, "__name__")
+            else str(param.annotation)
+            if param.annotation is not inspect.Parameter.empty
+            else ""
+        )
+        if param.default is not inspect.Parameter.empty:
+            default_repr = repr(param.default)
+            part = (
+                f"{name}: {annotation} = {default_repr}"
+                if annotation
+                else f"{name} = {default_repr}"
+            )
+        else:
+            part = f"{name}: {annotation}" if annotation else name
+        params.append(part)
+    param_str = ", ".join(params)
+    ret = sig.return_annotation
+    ret_str = (
+        ret.__name__
+        if hasattr(ret, "__name__")
+        else str(ret)
+        if ret is not inspect.Parameter.empty
+        else ""
     )
+    if ret_str and ret_str != "empty":
+        return f"{param_str} → {ret_str}"
+    return param_str
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +256,11 @@ class Agent:
         self._chat: lms.Chat | None = None
         self._mode: str = "ask"
         self._model_display: str = ""
-        self._verbose: bool = False
+        self._verbose: bool = True
+        self._turn_count: int = 0
+        self._max_file_bytes: int = get_settings().agent.max_file_bytes
+        self._show_tips: bool = get_settings().ui.show_tips
+        self._show_stats: bool = get_settings().ui.show_stats
 
     def _init_chat(self) -> lms.Chat:
         """Create and return a fresh Chat with the current system prompt."""
@@ -212,12 +304,19 @@ class Agent:
                 requested = parts[1].lower()
                 if requested in MODES:
                     self._mode = requested
-                    console.print(f"[{TEXT_MUTED}]mode → {self._mode}[/]\n")
+                    desc = _MODE_DESCRIPTIONS.get(self._mode, "")
+                    console.print(f"[{TEXT_MUTED}]→ {self._mode}  ({desc})[/]\n")
                 else:
                     valid = ", ".join(MODES)
                     console.print(f"[{ERROR}]unknown mode '{requested}'[/] — valid: {valid}\n")
             else:
-                console.print(f"[{TEXT_MUTED}]current mode: {self._mode}[/]\n")
+                desc = _MODE_DESCRIPTIONS.get(self._mode, "")
+                console.print(f"[{TEXT_MUTED}]current mode: {self._mode}  ({desc})[/]\n")
+                console.print(
+                    f"[{TEXT_MUTED}]  ask    confirms before each tool call[/]\n"
+                    f"[{TEXT_MUTED}]  auto   tools run automatically[/]\n"
+                    f"[{TEXT_MUTED}]  strict no tools — pure chat only[/]\n"
+                )
             return True
 
         if cmd == "/verbose":
@@ -230,6 +329,51 @@ class Agent:
                 console.print(f"[{TEXT_MUTED}]verbose off[/]\n")
             return True
 
+        if cmd == "/tips":
+            self._show_tips = not self._show_tips
+            state = "on" if self._show_tips else "off"
+            console.print(f"[{TEXT_MUTED}]tips {state}[/]\n")
+            return True
+
+        if cmd == "/stats":
+            self._show_stats = not self._show_stats
+            state = "on" if self._show_stats else "off"
+            console.print(f"[{TEXT_MUTED}]stats {state}[/]\n")
+            return True
+
+        if cmd == "/tools":
+            console.print(f"\n[{ACCENT_BRIGHT}]available tools[/]")
+            for fn in self._tools:
+                sig = _format_tool_signature(fn)
+                row = Text()
+                row.append(f"  {fn.__name__:<14}", style=TEXT_MUTED)
+                row.append(sig)
+                console.print(row)
+            console.print()
+            return True
+
+        if cmd == "/status":
+            turns = self._turn_count
+            verbose_state = "on" if self._verbose else "off"
+            tips_state = "on" if self._show_tips else "off"
+            stats_state = "on" if self._show_stats else "off"
+            console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
+            rows: list[tuple[str, str]] = [
+                ("model", self._model_display or "(none)"),
+                ("mode", self._mode),
+                ("verbose", verbose_state),
+                ("tips", tips_state),
+                ("stats", stats_state),
+                ("turns", str(turns)),
+            ]
+            for label, value in rows:
+                row = Text()
+                row.append(f"  {label:<10}", style=TEXT_MUTED)
+                row.append(value)
+                console.print(row)
+            console.print()
+            return True
+
         if cmd == "/version":
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
@@ -237,15 +381,21 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(self, model: Any, user_input: str) -> str:
-        """Send one user message, run the tool loop, and return the response text.
+    async def _run_turn(
+        self, model: Any, user_input: str, live: Any = None, tip: str | None = None
+    ) -> tuple[str, str]:
+        """Send one user message, run the tool loop, return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
         update our history with the final assistant response afterwards.
         The response text is captured via the on_message callback because
         ActResult only carries timing metadata, not the actual content.
+        If *live* is a Rich Live instance, on_prediction_fragment updates it
+        with a live token counter: '⠋ thinking…  42 tok'.
+        If *tip* is provided, it is shown as a second line below the spinner.
         When self._verbose is True, each tool is wrapped to print its call
         and result before being passed to model.act().
+        Tool call messages update the spinner with the active file path.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
@@ -253,11 +403,22 @@ class Agent:
         captured: list[str] = []
 
         def _on_message(msg: Any) -> None:
-            """Capture the final AssistantResponse text.
+            """Update spinner with active file on tool calls; capture assistant text.
 
-            msg.content is a list of TextData objects — join their .text fields.
+            For tool call messages, extracts the path argument and updates the
+            Live spinner label to show which file is being read or written.
+            For assistant messages, joins content parts and stores in captured.
             """
-            if hasattr(msg, "content") and hasattr(msg, "role"):
+            if hasattr(msg, "tool_calls") and msg.tool_calls and live is not None:
+                for tc in msg.tool_calls:
+                    path = (tc.arguments or {}).get("path", "")
+                    if path:
+                        label = f" {tc.name} {path[-40:]}"
+                        rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
+                        if tip:
+                            rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
+                        live.update(RenderGroup(*rows))
+            elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
                     text = "".join(p.text for p in parts if hasattr(p, "text"))
@@ -265,12 +426,40 @@ class Agent:
                     text = str(parts)
                 captured.append(text)
 
+        stats_capture: list[Any] = []
+
+        def _on_prediction_completed(result: Any) -> None:
+            """Capture per-round PredictionResult.stats for the post-response summary."""
+            if hasattr(result, "stats"):
+                stats_capture.append(result.stats)
+
+        tok_count: list[int] = [0]
+
+        def _on_fragment(fragment: Any, _round_index: int) -> None:
+            """Count generated tokens and update the Live spinner with tip if provided."""
+            tok_count[0] += 1
+            if live is not None:
+                rows: list[Any] = [
+                    Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok", style=ACCENT)
+                ]
+                if tip:
+                    rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
+                live.update(RenderGroup(*rows))
+
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
-        await model.act(chat, tools=tools, on_message=_on_message)
+        act_result = await model.act(
+            chat,
+            tools=tools,
+            on_message=_on_message,
+            on_prediction_completed=_on_prediction_completed,
+            on_prediction_fragment=_on_fragment,
+        )
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
-        return response_text
+        self._turn_count += 1
+        elapsed = getattr(act_result, "total_time_seconds", None)
+        return response_text, _build_stats_line(stats_capture, elapsed)
 
     async def run(self) -> None:
         """Connect to LM Studio and run the interactive chat loop.
@@ -282,10 +471,8 @@ class Agent:
         settings = get_settings()
 
         def _cycle_mode() -> None:
-            """Advance to the next mode and print a one-liner describing it."""
+            """Advance to the next mode in-place (prompt redraws via invalidate)."""
             self._mode = next_mode(self._mode)
-            desc = _MODE_DESCRIPTIONS.get(self._mode, "")
-            console.print(f"\n[{TEXT_MUTED}]→ {self._mode}  ({desc})[/]")
 
         session = _make_session(cycle_mode=_cycle_mode)
 
@@ -293,6 +480,8 @@ class Agent:
             async with lms.AsyncClient() as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
+                self._max_file_bytes = await _compute_max_file_bytes(model, resolved_id)
+                get_settings().agent.max_file_bytes = self._max_file_bytes
                 console.print(build_status_line(resolved_id) + "\n")
                 _print_startup_tip()
 
@@ -308,26 +497,50 @@ class Agent:
                     if not stripped:
                         continue
 
+                    # Replace the submitted prompt line with a dim history entry.
+                    _rewrite_as_history(stripped)
+
                     if stripped.lower() in ("exit", "quit", "q"):
                         console.print(f"[{TEXT_MUTED}]bye[/]")
                         break
 
                     if stripped.startswith("/"):
                         self._handle_slash(stripped)
+                        console.print(Rule(style=f"dim {ACCENT}"))
                         continue
 
+                    tip = random.choice(_TIPS) if self._show_tips else None
+                    initial: Any = RenderGroup(
+                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
+                        Text(f"  {tip}", style=f"dim {ACCENT}") if tip else Text(""),
+                    )
                     with Live(
-                        Spinner("dots", text=" thinking…"),
+                        initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
-                    ):
-                        response = await self._run_turn(model, user_input)
+                    ) as live:
+                        response, stats = await self._run_turn(
+                            model, user_input, live=live, tip=tip
+                        )
 
-                    console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}\n")
+                    msg = Text()
+                    msg.append("\nlmcode", style=ACCENT_BRIGHT)
+                    msg.append("  › ")
+                    msg.append(response)
+                    console.print(msg, highlight=False)
+                    if stats and self._show_stats:
+                        console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
+                    console.print()
+                    console.print(Rule(style=f"dim {ACCENT}"))
 
         except SystemExit:
             pass
+        except lms.LMStudioModelNotFoundError:
+            console.print(f"\n[{WARNING}]model ejected[/] — the model was unloaded from LM Studio")
+            console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
+        except RuntimeError as e:
+            console.print(f"[{ERROR}]error:[/] {e}")
         except (ConnectionRefusedError, OSError) as e:
             if isinstance(e, ConnectionRefusedError) or "Connect" in str(e):
                 _print_connection_error(settings.lmstudio.base_url)
@@ -358,12 +571,93 @@ async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
     return first, first.identifier
 
 
+def _build_stats_line(stats_list: list[Any], total_seconds: float | None) -> str:
+    """Build a compact stats string from accumulated PredictionResult.stats objects.
+
+    Returns an empty string when no stats are available so the caller can
+    skip printing entirely.  Format: '↑ 1.2k  ↓ 384  ·  45 tok/s  ·  2.3s'
+    """
+    if not stats_list:
+        return ""
+
+    def _fmt(n: int) -> str:
+        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+    prompt_tok = sum(getattr(s, "prompt_tokens_count", 0) or 0 for s in stats_list)
+    pred_tok = sum(getattr(s, "predicted_tokens_count", 0) or 0 for s in stats_list)
+    tok_per_sec: float = getattr(stats_list[-1], "tokens_per_second", 0) or 0
+
+    parts: list[str] = []
+    if prompt_tok or pred_tok:
+        parts.append(f"↑ {_fmt(prompt_tok)}  ↓ {_fmt(pred_tok)}")
+    if tok_per_sec > 0:
+        parts.append(f"{tok_per_sec:.0f} tok/s")
+    if total_seconds and total_seconds > 0:
+        parts.append(f"{total_seconds:.1f}s")
+
+    return "  ·  ".join(parts)
+
+
 def _print_connection_error(base_url: str) -> None:
     """Print a user-friendly message when LM Studio cannot be reached."""
     console.print(f"[{ERROR}]error:[/] cannot connect to LM Studio at {base_url}")
     console.print(
         f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]"
     )  # noqa: E501
+
+
+# ---------------------------------------------------------------------------
+# Token-aware file byte limit (Issue #2)
+# ---------------------------------------------------------------------------
+
+# Mapping of context-window keywords (lowercase) to token count.
+_CTX_HINTS: list[tuple[str, int]] = [
+    ("128k", 131_072),
+    ("64k", 65_536),
+    ("32k", 32_768),
+    ("16k", 16_384),
+    ("8k", 8_192),
+    ("4k", 4_096),
+]
+
+# Rough byte-per-token estimate and fraction of context to use for file content.
+_BYTES_PER_TOKEN: int = 4
+_FILE_CONTENT_FRACTION: float = 0.20
+_MIN_FILE_BYTES: int = 50_000
+_MAX_FILE_BYTES: int = 500_000
+
+
+def _ctx_len_from_name(model_id: str) -> int | None:
+    """Extract a context-length hint from *model_id* by looking for size suffixes.
+
+    Returns the matched token count, or None if no hint is found.
+    """
+    lower = model_id.lower()
+    for hint, tokens in _CTX_HINTS:
+        if hint in lower:
+            return tokens
+    return None
+
+
+async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
+    """Query the model's actual context length and derive a file-byte cap.
+
+    Queries ``model.get_context_length()`` first; on failure, falls back to
+    a heuristic derived from the model identifier, then to the config default.
+
+    The formula is:  clamp(ctx_tokens * bytes_per_token * fraction, 50_000, 500_000)
+    """
+    ctx_len: int | None = None
+    try:
+        ctx_len = await model.get_context_length()
+    except Exception:
+        ctx_len = _ctx_len_from_name(model_id)
+
+    if ctx_len is not None and ctx_len > 0:
+        computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
+        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES))
+
+    return get_settings().agent.max_file_bytes
 
 
 def run_chat(model_id: str = "auto") -> None:
