@@ -245,7 +245,9 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(self, model: Any, user_input: str) -> tuple[str, str]:
+    async def _run_turn(
+        self, model: Any, user_input: str, live: Any = None
+    ) -> tuple[str, str]:
         """Send one user message, run the tool loop, and return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
@@ -253,6 +255,8 @@ class Agent:
         The response text is captured via the on_message callback because
         ActResult only carries timing metadata, not the actual content.
         Token stats are captured via on_prediction_completed (closes #17).
+        If *live* is a Rich Live instance, on_prediction_fragment updates it
+        with a live token counter.
         When self._verbose is True, each tool is wrapped to print its call
         and result before being passed to model.act().
         """
@@ -275,10 +279,18 @@ class Agent:
                     text = str(parts)
                 captured.append(text)
 
-        def _on_prediction_completed(result: Any, _round_index: int) -> None:
+        def _on_prediction_completed(result: Any) -> None:
             """Capture per-round token stats from PredictionResult.stats."""
             if hasattr(result, "stats"):
                 stats_capture.append(result.stats)
+
+        tok_count: list[int] = [0]
+
+        def _on_fragment(fragment: Any) -> None:
+            """Count generated tokens and update the Live spinner if provided."""
+            tok_count[0] += 1
+            if live is not None:
+                live.update(Spinner("dots", text=f" thinking…  {tok_count[0]} tok"))
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
         act_result = await model.act(
@@ -286,6 +298,7 @@ class Agent:
             tools=tools,
             on_message=_on_message,
             on_prediction_completed=_on_prediction_completed,
+            on_prediction_fragment=_on_fragment,
         )
 
         response_text = captured[-1] if captured else "(no response)"
@@ -343,8 +356,8 @@ class Agent:
                         transient=True,
                         console=console,
                         refresh_per_second=10,
-                    ):
-                        response, stats_line = await self._run_turn(model, user_input)
+                    ) as live:
+                        response, stats_line = await self._run_turn(model, user_input, live=live)
 
                     console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}\n")
                     if stats_line:
