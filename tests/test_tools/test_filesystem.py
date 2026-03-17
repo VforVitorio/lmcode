@@ -8,7 +8,6 @@ import pytest
 
 from lmcode.tools.filesystem import _is_binary, _read_text, _resolve_path, read_file
 
-
 # ---------------------------------------------------------------------------
 # _resolve_path
 # ---------------------------------------------------------------------------
