@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import lmstudio as lms
 import typer
 
-import lmstudio as lms
 from lmcode import __version__
 from lmcode.agent.core import run_chat
 from lmcode.ui.banner import print_banner
