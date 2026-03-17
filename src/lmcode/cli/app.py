@@ -18,6 +18,7 @@ console = Console()
 
 
 def version_callback(value: bool) -> None:
+    """Print version string and exit when --version is supplied."""
     if value:
         console.print(f"lmcode {__version__}")
         raise typer.Exit()
