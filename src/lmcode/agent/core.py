@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Callable
 from typing import Any
 
@@ -14,12 +15,19 @@ from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
 
+from lmcode import __version__
 from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
 from lmcode.ui.colors import ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED
-from lmcode.ui.status import MODES, build_prompt, build_status_line, next_mode
+from lmcode.ui.status import (
+    _MODE_DESCRIPTIONS,
+    MODES,
+    build_prompt,
+    build_status_line,
+    next_mode,
+)
 
 console = Console()
 
@@ -39,6 +47,8 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear conversation history"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
     ("/model", "Show the current model"),
+    ("/verbose", "Toggle verbose mode (show tool calls and results)"),
+    ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
 
@@ -103,6 +113,23 @@ def _print_tool_result(name: str, result: str) -> None:
     console.print(f"  [{SUCCESS}]✓  {name}[/] [{TEXT_MUTED}]{preview}{suffix}[/]")
 
 
+def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
+    """Wrap a tool callable so that invocations and results are printed to the console.
+
+    Preserves the original function's __name__, __doc__, and __annotations__ via
+    functools.wraps so the LM Studio SDK can still build the correct JSON schema.
+    """
+
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> str:
+        _print_tool_call(fn.__name__, kwargs)
+        result = fn(*args, **kwargs)
+        _print_tool_result(fn.__name__, str(result))
+        return result
+
+    return _wrapper
+
+
 # ---------------------------------------------------------------------------
 # PromptSession factory
 # ---------------------------------------------------------------------------
@@ -141,6 +168,7 @@ class Agent:
         self._chat: lms.Chat | None = None
         self._mode: str = "ask"
         self._model_display: str = ""
+        self._verbose: bool = False
 
     def _init_chat(self) -> lms.Chat:
         """Create and return a fresh Chat with the current system prompt."""
@@ -155,7 +183,8 @@ class Agent:
     def _handle_slash(self, raw: str) -> bool:
         """Handle a slash command.  Returns True if input was consumed, False otherwise.
 
-        Supported commands: /help, /clear, /mode [ask|auto|strict], /exit.
+        Supported commands: /help, /clear, /mode [ask|auto|strict], /model,
+        /verbose, /version, /exit.
         """
         parts = raw.strip().split()
         cmd = parts[0].lower()
@@ -191,6 +220,20 @@ class Agent:
                 console.print(f"[{TEXT_MUTED}]current mode: {self._mode}[/]\n")
             return True
 
+        if cmd == "/verbose":
+            self._verbose = not self._verbose
+            if self._verbose:
+                console.print(
+                    f"[{TEXT_MUTED}]verbose on — tool calls and results will be shown[/]\n"
+                )
+            else:
+                console.print(f"[{TEXT_MUTED}]verbose off[/]\n")
+            return True
+
+        if cmd == "/version":
+            console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
+            return True
+
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
@@ -201,6 +244,8 @@ class Agent:
         update our history with the final assistant response afterwards.
         The response text is captured via the on_message callback because
         ActResult only carries timing metadata, not the actual content.
+        When self._verbose is True, each tool is wrapped to print its call
+        and result before being passed to model.act().
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
@@ -220,7 +265,8 @@ class Agent:
                     text = str(parts)
                 captured.append(text)
 
-        await model.act(chat, tools=self._tools, on_message=_on_message)
+        tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
+        await model.act(chat, tools=tools, on_message=_on_message)
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
@@ -236,7 +282,10 @@ class Agent:
         settings = get_settings()
 
         def _cycle_mode() -> None:
+            """Advance to the next mode and print a one-liner describing it."""
             self._mode = next_mode(self._mode)
+            desc = _MODE_DESCRIPTIONS.get(self._mode, "")
+            console.print(f"\n[{TEXT_MUTED}]→ {self._mode}  ({desc})[/]")
 
         session = _make_session(cycle_mode=_cycle_mode)
 
