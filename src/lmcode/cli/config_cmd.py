@@ -50,7 +50,7 @@ def _dump_toml(data: dict[str, Any], path: Path) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        import tomli_w  # type: ignore[import-untyped]
+        import tomli_w
 
         with path.open("wb") as fh:
             tomli_w.dump(data, fh)

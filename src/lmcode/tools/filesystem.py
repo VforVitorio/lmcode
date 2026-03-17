@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 from lmcode.config.settings import get_settings
@@ -197,7 +198,7 @@ def _should_skip(part: str) -> bool:
     return part in _SKIP_DIRS
 
 
-def _iter_files(root: Path, pattern: str):
+def _iter_files(root: Path, pattern: str) -> Iterator[Path]:
     """Yield Path objects under *root* matching *pattern*, skipping ignored dirs.
 
     Skips any path whose components include a directory from ``_SKIP_DIRS``.

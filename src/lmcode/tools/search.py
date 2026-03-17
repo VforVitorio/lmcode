@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 from lmcode.tools.registry import register
@@ -81,7 +82,7 @@ def _should_skip(parts: tuple[str, ...]) -> bool:
     return any(part in _SKIP_DIRS for part in parts)
 
 
-def _iter_candidate_files(root: Path, file_glob: str):
+def _iter_candidate_files(root: Path, file_glob: str) -> Iterator[Path]:
     """Yield Path objects under *root* matching *file_glob*, skipping ignored dirs."""
     for p in root.rglob(file_glob):
         if p.is_file() and not _should_skip(p.parts):
