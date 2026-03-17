@@ -245,13 +245,14 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(self, model: Any, user_input: str) -> str:
-        """Send one user message, run the tool loop, and return the response text.
+    async def _run_turn(self, model: Any, user_input: str) -> tuple[str, str]:
+        """Send one user message, run the tool loop, and return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
         update our history with the final assistant response afterwards.
         The response text is captured via the on_message callback because
         ActResult only carries timing metadata, not the actual content.
+        Token stats are captured via on_prediction_completed (closes #17).
         When self._verbose is True, each tool is wrapped to print its call
         and result before being passed to model.act().
         """
@@ -259,6 +260,7 @@ class Agent:
         chat.add_user_message(user_input)
 
         captured: list[str] = []
+        stats_capture: list[Any] = []
 
         def _on_message(msg: Any) -> None:
             """Capture the final AssistantResponse text.
@@ -273,12 +275,24 @@ class Agent:
                     text = str(parts)
                 captured.append(text)
 
+        def _on_prediction_completed(result: Any, _round_index: int) -> None:
+            """Capture per-round token stats from PredictionResult.stats."""
+            if hasattr(result, "stats"):
+                stats_capture.append(result.stats)
+
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
-        await model.act(chat, tools=tools, on_message=_on_message)
+        act_result = await model.act(
+            chat,
+            tools=tools,
+            on_message=_on_message,
+            on_prediction_completed=_on_prediction_completed,
+        )
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
-        return response_text
+
+        stats_line = _format_stats(stats_capture, getattr(act_result, "total_time_seconds", None))
+        return response_text, stats_line
 
     async def run(self) -> None:
         """Connect to LM Studio and run the interactive chat loop.
@@ -330,9 +344,11 @@ class Agent:
                         console=console,
                         refresh_per_second=10,
                     ):
-                        response = await self._run_turn(model, user_input)
+                        response, stats_line = await self._run_turn(model, user_input)
 
                     console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}\n")
+                    if stats_line:
+                        console.print(f"[{TEXT_MUTED}]{stats_line}[/]\n")
 
         except SystemExit:
             pass
@@ -364,6 +380,40 @@ async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
         raise RuntimeError("No models are loaded in LM Studio. Load a model first, then retry.")
     first = loaded[0]
     return first, first.identifier
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format a token count as '1.2k' for ≥1000, or plain digits otherwise."""
+    return f"{n / 1000:.1f}k" if n >= 1_000 else str(n)
+
+
+def _format_stats(stats_list: list[Any], total_seconds: float | None) -> str:
+    """Build a muted one-liner with token counts, speed, and wall time.
+
+    Aggregates across all rounds (multi-round tool-use sessions accumulate
+    stats per prediction).  Returns an empty string if no stats are available.
+
+    Example output:  ↑ 1.2k  ↓ 384  ·  45 tok/s  ·  2.3s
+    """
+    if not stats_list:
+        return ""
+
+    prompt_tok = sum(getattr(s, "prompt_tokens_count", 0) or 0 for s in stats_list)
+    pred_tok = sum(getattr(s, "predicted_tokens_count", 0) or 0 for s in stats_list)
+
+    # tok/s from the last round is most representative
+    last = stats_list[-1]
+    tok_per_sec: float = getattr(last, "tokens_per_second", 0) or 0
+
+    parts: list[str] = []
+    if prompt_tok or pred_tok:
+        parts.append(f"↑ {_fmt_tokens(prompt_tok)}  ↓ {_fmt_tokens(pred_tok)}")
+    if tok_per_sec > 0:
+        parts.append(f"{tok_per_sec:.0f} tok/s")
+    if total_seconds is not None and total_seconds > 0:
+        parts.append(f"{total_seconds:.1f}s")
+
+    return "  ·  ".join(parts)
 
 
 def _print_connection_error(base_url: str) -> None:
