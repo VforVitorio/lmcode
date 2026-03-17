@@ -15,7 +15,7 @@ def read_file(path: str) -> str:
         content = Path(path).read_text(encoding="utf-8")
         return ToolResult(output=content).output
     except FileNotFoundError:
-        return ToolResult(output="", error=f"File not found: {path}").error
+        return ToolResult(output=f"File not found: {path}", success=False).output
 ```
 
 **Rules:**
@@ -29,35 +29,52 @@ def read_file(path: str) -> str:
 ```python
 @dataclass
 class ToolResult:
-    output: str = ""
-    error: str = ""
-    truncated: bool = False
+    output: str
+    success: bool = True
+    metadata: dict[str, Any] | None = None
 ```
 
-Located in `src/lmcode/tools/base.py`. Provides a standard envelope for tool output.
+Located in `src/lmcode/tools/base.py`. Provides a standard envelope for tool output. The `__str__` method returns `self.output`, so a `ToolResult` can be passed directly wherever a string is expected.
+
+## `Tool` type alias
+
+`src/lmcode/tools/base.py` exports a `Tool` type alias:
+
+```python
+from collections.abc import Callable
+Tool = Callable[..., str]
+```
+
+This alias is used throughout the registry and any code that passes tools around.
 
 ## Registry
 
-`src/lmcode/tools/registry.py` maintains a dict of `name → callable`. The `@register` decorator adds the function using its `__name__` as the key.
+`src/lmcode/tools/registry.py` maintains a module-level dict `_registry: dict[str, Callable[..., str]]`. The `@register` decorator inserts the function using its `__name__` as the key and returns the function unchanged (so it can be used without wrapping).
 
 ```python
-from lmcode.tools.registry import get_all, get
+from lmcode.tools.registry import register, get_all, get
 
-tools = get_all()   # list[Callable] — pass to model.act(tools=tools)
-fn = get("read_file")  # Callable | None
+@register
+def my_tool(x: str) -> str:
+    """Example tool."""
+    return x
+
+tools = get_all()        # list[Callable[..., str]] — pass to model.act(tools=tools)
+fn    = get("my_tool")  # Callable[..., str] | None
 ```
 
 ## Built-in tools
 
-| Tool | File | Description |
-|------|------|-------------|
-| `read_file` | `tools/builtin/files.py` | Read file contents |
-| `write_file` | `tools/builtin/files.py` | Write or overwrite a file |
-| `list_files` | `tools/builtin/files.py` | List files matching a glob pattern |
-| `run_shell` | `tools/builtin/shell.py` | Run a shell command and capture output |
-| `search_code` | `tools/builtin/search.py` | Grep for a pattern across files |
+The tool implementation files (`tools/filesystem.py`, `tools/shell.py`, `tools/search.py`, `tools/git.py`) are currently empty stubs. No built-in tools are registered yet; they will be filled in as the `feat/tools-base` branch progresses.
 
-> These tools are implemented in `feat/tools-base`.
+| Planned tool | Planned file | Description |
+|------|------|-------------|
+| `read_file` | `tools/filesystem.py` | Read file contents |
+| `write_file` | `tools/filesystem.py` | Write or overwrite a file |
+| `list_files` | `tools/filesystem.py` | List files matching a glob pattern |
+| `run_shell` | `tools/shell.py` | Run a shell command and capture output |
+| `search_code` | `tools/search.py` | Grep for a pattern across files |
+| `git_*` | `tools/git.py` | Git operations |
 
 ## Adding a custom tool
 

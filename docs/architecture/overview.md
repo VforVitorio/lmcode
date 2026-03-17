@@ -32,7 +32,7 @@ Entry point via the `lmcode` command. Built with [Typer](https://typer.tiangolo.
 
 ### 3. Tools layer (`src/lmcode/tools/`)
 
-Tools are plain Python functions registered with the `@register` decorator. They return `ToolResult` dataclasses and are passed to `model.act()` as a list. See [tool system docs](../features/tools.md).
+Tools are plain Python functions registered with the `@register` decorator. They return `str` (the `Tool = Callable[..., str]` type alias from `tools/base.py`). Internally a tool may construct a `ToolResult` dataclass and return its `.output` field. Registered tools are collected with `get_all()` and passed to `model.act()` as a list. See [tool system docs](../features/tools.md).
 
 ### 4. Agent Core (`src/lmcode/agent/`)
 
