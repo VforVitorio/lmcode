@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lmcode.agent.core import Agent, _build_system_prompt, _print_tool_call, _print_tool_result
-
+from lmcode.agent.core import Agent, _build_system_prompt
 
 # ---------------------------------------------------------------------------
 # _build_system_prompt
@@ -76,16 +74,31 @@ def test_agent_ensure_chat_returns_same_instance() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _make_mock_model(response_text: str) -> MagicMock:
+    """Build a mock model whose act() calls on_message with a fake AssistantResponse."""
+
+    async def act_side_effect(
+        chat: object, tools: object, on_message: object = None, **kwargs: object
+    ) -> MagicMock:
+        if callable(on_message):
+            text_part = MagicMock()
+            text_part.text = response_text
+            msg = MagicMock()
+            msg.content = [text_part]
+            msg.role = "assistant"
+            on_message(msg)
+        return MagicMock()
+
+    mock = MagicMock()
+    mock.act = AsyncMock(side_effect=act_side_effect)
+    return mock
+
+
 @pytest.mark.asyncio
 async def test_run_turn_returns_response_text() -> None:
     """_run_turn returns the model's response as a string."""
     agent = Agent()
-
-    mock_result = MagicMock()
-    mock_result.content = "here is the answer"
-
-    mock_model = MagicMock()
-    mock_model.act = AsyncMock(return_value=mock_result)
+    mock_model = _make_mock_model("here is the answer")
 
     with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
         response = await agent._run_turn(mock_model, "hello")
@@ -97,15 +110,9 @@ async def test_run_turn_returns_response_text() -> None:
 async def test_run_turn_adds_to_chat_history() -> None:
     """After _run_turn the chat has been updated with both messages."""
     agent = Agent()
-
-    mock_result = MagicMock()
-    mock_result.content = "response"
-
-    mock_model = MagicMock()
-    mock_model.act = AsyncMock(return_value=mock_result)
+    mock_model = _make_mock_model("response")
 
     with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
         await agent._run_turn(mock_model, "question")
 
-    # chat was initialised and populated
     assert agent._chat is not None
