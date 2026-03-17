@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 
 from lmcode import __version__
+from lmcode.agent.core import run_chat
 from lmcode.ui.banner import print_banner
-from lmcode.ui.colors import WARNING
 
 app = typer.Typer()
-console = Console()
 
 
 @app.callback(invoke_without_command=True)
@@ -20,5 +18,4 @@ def chat(
 ) -> None:
     """Start an interactive coding agent session in the current directory."""
     print_banner(__version__, model=model if model != "auto" else "", mode="ask")
-    console.print(f"[{WARNING}]agent loop not implemented yet — coming in feat/agent-core[/]")
-    raise typer.Exit()
+    run_chat(model_id=model)
