@@ -25,7 +25,7 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED
+from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED, WARNING
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -36,8 +36,25 @@ from lmcode.ui.status import (
 
 console = Console()
 
+
+def _rewrite_as_history(text: str) -> None:
+    """Overwrite the just-submitted prompt line with a dimmed history entry.
+
+    Uses ANSI cursor-up + clear-line so the full '● lmcode (model) [mode] ›'
+    prompt is replaced by a minimal muted '›  text' style, keeping the
+    scrollback visually uncluttered.  Assumes the input fit on a single line,
+    which is true for any terminal ≥ 80 cols and messages under ~35 chars.
+    """
+    console.file.write("\x1b[1A\r\x1b[2K")
+    console.file.flush()
+    row = Text()
+    row.append("  ›  ", style=TEXT_MUTED)
+    row.append(text, style=f"dim {TEXT_MUTED}")
+    console.print(row)
+
+
 # Spinner style used for the thinking indicator.  Configurable via UISettings.
-_SPINNER = "arc"
+_SPINNER = "dots"
 
 # Rotating tips shown below the spinner during model inference.
 _TIPS: list[str] = [
@@ -61,6 +78,9 @@ For greetings, general questions, explanations, or anything you can answer
 from your own knowledge — respond directly without calling any tools.
 When you do need to inspect a file, always use the available tools rather
 than guessing at its contents.
+
+Never output raw XML, HTML tags, JSON schemas, or tool definitions in your
+responses. Always reply in plain text or Markdown.
 """
 
 # ---------------------------------------------------------------------------
@@ -237,6 +257,7 @@ class Agent:
         self._mode: str = "ask"
         self._model_display: str = ""
         self._verbose: bool = True
+        self._turn_count: int = 0
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
@@ -332,11 +353,7 @@ class Agent:
             return True
 
         if cmd == "/status":
-            turns = (
-                len(self._chat._history) // 2
-                if self._chat and hasattr(self._chat, "_history")
-                else 0
-            )
+            turns = self._turn_count
             verbose_state = "on" if self._verbose else "off"
             tips_state = "on" if self._show_tips else "off"
             stats_state = "on" if self._show_stats else "off"
@@ -397,7 +414,7 @@ class Agent:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
                         label = f" {tc.name} {path[-40:]}"
-                        rows: list[Any] = [Spinner(_SPINNER, text=label)]
+                        rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
                         if tip:
                             rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
                         live.update(RenderGroup(*rows))
@@ -422,7 +439,9 @@ class Agent:
             """Count generated tokens and update the Live spinner with tip if provided."""
             tok_count[0] += 1
             if live is not None:
-                rows: list[Any] = [Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok")]
+                rows: list[Any] = [
+                    Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok", style=ACCENT)
+                ]
                 if tip:
                     rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
                 live.update(RenderGroup(*rows))
@@ -438,6 +457,7 @@ class Agent:
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
+        self._turn_count += 1
         elapsed = getattr(act_result, "total_time_seconds", None)
         return response_text, _build_stats_line(stats_capture, elapsed)
 
@@ -477,21 +497,21 @@ class Agent:
                     if not stripped:
                         continue
 
+                    # Replace the submitted prompt line with a dim history entry.
+                    _rewrite_as_history(stripped)
+
                     if stripped.lower() in ("exit", "quit", "q"):
                         console.print(f"[{TEXT_MUTED}]bye[/]")
                         break
 
                     if stripped.startswith("/"):
                         self._handle_slash(stripped)
+                        console.print(Rule(style=f"dim {ACCENT}"))
                         continue
-
-                    # Separator rule echoing the user's message (Issue #28).
-                    label = stripped[:60] + ("…" if len(stripped) > 60 else "")
-                    console.print(Rule(label, style=f"dim {ACCENT}"))
 
                     tip = random.choice(_TIPS) if self._show_tips else None
                     initial: Any = RenderGroup(
-                        Spinner(_SPINNER, text=" thinking…"),
+                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
                         Text(f"  {tip}", style=f"dim {ACCENT}") if tip else Text(""),
                     )
                     with Live(
@@ -504,13 +524,23 @@ class Agent:
                             model, user_input, live=live, tip=tip
                         )
 
-                    console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}")
+                    msg = Text()
+                    msg.append("\nlmcode", style=ACCENT_BRIGHT)
+                    msg.append("  › ")
+                    msg.append(response)
+                    console.print(msg, highlight=False)
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
+                    console.print(Rule(style=f"dim {ACCENT}"))
 
         except SystemExit:
             pass
+        except lms.LMStudioModelNotFoundError:
+            console.print(f"\n[{WARNING}]model ejected[/] — the model was unloaded from LM Studio")
+            console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
+        except RuntimeError as e:
+            console.print(f"[{ERROR}]error:[/] {e}")
         except (ConnectionRefusedError, OSError) as e:
             if isinstance(e, ConnectionRefusedError) or "Connect" in str(e):
                 _print_connection_error(settings.lmstudio.base_url)

@@ -48,7 +48,7 @@ class SessionSettings(BaseSettings):
 class UISettings(BaseSettings):
     """Display and interaction settings."""
 
-    spinner: str = "arc"  # Rich spinner name
+    spinner: str = "dots"  # Rich spinner name
     show_tips: bool = True  # show rotating tips during thinking
     show_stats: bool = True  # show token stats after response
 

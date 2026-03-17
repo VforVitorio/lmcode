@@ -20,11 +20,9 @@ from lmcode.ui.colors import (
     ACCENT_BRIGHT,
     BORDER,
     ERROR,
-    INFO,
     SUCCESS,
     TEXT_MUTED,
     TEXT_PRIMARY,
-    WARNING,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,7 +76,6 @@ def _status_dot(ok: bool) -> tuple[str, str]:
 def get_banner(
     version: str,
     model: str = "",
-    mode: str = "ask",
     lmstudio_connected: bool = False,
 ) -> Panel:
     """
@@ -87,7 +84,6 @@ def get_banner(
     Args:
         version: lmcode version string
         model: loaded model name (empty = unknown)
-        mode: permission mode (ask / auto / strict)
         lmstudio_connected: whether LM Studio is reachable
     """
     content = Text(justify="center", no_wrap=True)
@@ -114,12 +110,6 @@ def get_banner(
         content.append(model, style=ACCENT)
 
     content.append("  ·  ", style=BORDER)
-
-    # Permission mode badge
-    mode_colors = {"ask": WARNING, "auto": INFO, "strict": ERROR}
-    content.append(f"{mode} mode", style=mode_colors.get(mode, TEXT_MUTED))
-
-    content.append("  ·  ", style=BORDER)
     content.append(f"v{version}\n", style=TEXT_MUTED)
 
     return Panel(
@@ -133,14 +123,13 @@ def _print_compact_banner(
     console: Console,
     version: str,
     model: str,
-    mode: str,
     lmstudio_connected: bool,
 ) -> None:
     """Print a narrow-terminal-friendly banner with no Panel or ASCII art.
 
     Used when the terminal is fewer than 90 columns wide.  Two styled lines:
       lmcode  ─►  local coding agent
-      ● LM Studio connected  ·  model  ·  ask mode  ·  v0.1.0
+      ● LM Studio connected  ·  model  ·  v0.1.0
     """
     line1 = Text()
     line1.append("  lmcode", style=f"bold {ACCENT}")
@@ -159,9 +148,6 @@ def _print_compact_banner(
         line2.append("  ·  ", style=BORDER)
         line2.append(model, style=ACCENT)
     line2.append("  ·  ", style=BORDER)
-    mode_colors = {"ask": WARNING, "auto": INFO, "strict": ERROR}
-    line2.append(f"{mode} mode", style=mode_colors.get(mode, TEXT_MUTED))
-    line2.append("  ·  ", style=BORDER)
     line2.append(f"v{version}", style=TEXT_MUTED)
     console.print(line2)
 
@@ -169,7 +155,6 @@ def _print_compact_banner(
 def print_banner(
     version: str,
     model: str = "",
-    mode: str = "ask",
     lmstudio_connected: bool = False,
 ) -> None:
     """Print the banner to stdout.
@@ -184,6 +169,6 @@ def print_banner(
     console = Console(legacy_windows=False)
     width = shutil.get_terminal_size((100, 24)).columns
     if width >= 90:
-        console.print(get_banner(version, model, mode, lmstudio_connected))
+        console.print(get_banner(version, model, lmstudio_connected))
     else:
-        _print_compact_banner(console, version, model, mode, lmstudio_connected)
+        _print_compact_banner(console, version, model, lmstudio_connected)
