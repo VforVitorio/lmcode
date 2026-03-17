@@ -13,6 +13,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from rich.align import Align
 from rich.console import Console
 from rich.live import Live
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
@@ -21,7 +22,7 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED
+from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -31,6 +32,9 @@ from lmcode.ui.status import (
 )
 
 console = Console()
+
+# Spinner style used for the thinking indicator.  Configurable via issue #20.
+_SPINNER = "arc"
 
 _BASE_SYSTEM_PROMPT = """\
 You are lmcode, a local AI coding agent. You help users understand, write,
@@ -76,11 +80,10 @@ def _print_help() -> None:
 
 
 def _print_startup_tip() -> None:
-    """Print a one-line tip shown once at session start."""
-    console.print(
-        f"[{TEXT_MUTED}]tip: Tab cycles mode  ·  /help for commands"
-        f"  ·  lmcode --help for CLI flags[/]\n"
-    )
+    """Print a styled tip rule shown once at session start."""
+    tip = "Tab cycles mode  ·  /help for commands  ·  /verbose to hide tool calls"
+    console.print(Rule(tip, style=f"dim {ACCENT}"))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +172,7 @@ class Agent:
         self._chat: lms.Chat | None = None
         self._mode: str = "ask"
         self._model_display: str = ""
-        self._verbose: bool = False
+        self._verbose: bool = True
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
 
     def _init_chat(self) -> lms.Chat:
@@ -289,7 +292,7 @@ class Agent:
             """Count generated tokens and update the Live spinner if provided."""
             tok_count[0] += 1
             if live is not None:
-                live.update(Spinner("dots", text=f" thinking…  {tok_count[0]} tok"))
+                live.update(Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok"))
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
         act_result = await model.act(
@@ -350,7 +353,7 @@ class Agent:
                         continue
 
                     with Live(
-                        Spinner("dots", text=" thinking…"),
+                        Spinner(_SPINNER, text=" thinking…"),
                         transient=True,
                         console=console,
                         refresh_per_second=10,
