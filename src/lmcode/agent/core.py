@@ -359,7 +359,7 @@ class Agent:
 
                     console.print(f"\n[{ACCENT_BRIGHT}]lmcode[/]  › {response}")
                     if stats:
-                        console.print(Align.right(Text(stats, style=TEXT_MUTED)))
+                        console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
 
         except SystemExit:
