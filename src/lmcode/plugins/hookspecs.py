@@ -9,6 +9,8 @@ hookimpl = pluggy.HookimplMarker("lmcode")
 
 
 class LMCodeSpec:
+    """Pluggy hookspec declarations for all lmcode lifecycle events."""
+
     @hookspec
     def on_session_start(self, session_id: str, working_dir: str) -> None:
         """Fired when an agent session begins."""

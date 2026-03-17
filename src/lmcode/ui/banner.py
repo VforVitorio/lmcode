@@ -60,6 +60,7 @@ _CODE = [
 
 
 def _build_art() -> Text:
+    """Assemble the multi-colour ASCII art block as a Rich Text object."""
     art = Text(justify="center", no_wrap=True)
     for lm, arrow, code in zip(_LM, _ARROW, _CODE, strict=True):
         art.append(lm, style=f"bold {ACCENT}")
@@ -69,6 +70,7 @@ def _build_art() -> Text:
 
 
 def _status_dot(ok: bool) -> tuple[str, str]:
+    """Return a (character, rich_style) pair for the LM Studio connection indicator."""
     return ("●", SUCCESS) if ok else ("●", ERROR)
 
 
