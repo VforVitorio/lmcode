@@ -415,6 +415,7 @@ class Agent:
             return True
 
         if cmd == "/tokens":
+
             def _fmt_tok(n: int) -> str:
                 return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
 
@@ -470,8 +471,7 @@ class Agent:
         summary_prompt = (
             "Summarise the following conversation in one concise paragraph. "
             "Include the key topics discussed, any decisions or conclusions, "
-            "and open questions.  Be factual and brief — no filler.\n\n"
-            + history_text
+            "and open questions.  Be factual and brief — no filler.\n\n" + history_text
         )
 
         summary_chat = lms.Chat("You are a helpful summariser.")
@@ -500,9 +500,7 @@ class Agent:
 
         # Reset chat, inject summary as context note.
         self._chat = self._init_chat()
-        self._chat.add_user_message(
-            "[context from compacted history]\n" + text
-        )
+        self._chat.add_user_message("[context from compacted history]\n" + text)
         self._raw_history.clear()
         self._ctx_warned = False
 
@@ -512,17 +510,14 @@ class Agent:
         preview = text[:300] + ("…" if len(text) > 300 else "")
         console.print(
             Panel(
-                f"[{TEXT_MUTED}]{msgs_compacted} messages → 1 summary[/]\n\n"
-                + preview,
+                f"[{TEXT_MUTED}]{msgs_compacted} messages → 1 summary[/]\n\n" + preview,
                 title="compacted",
                 border_style=ACCENT,
             )
         )
         console.print()
 
-    async def _run_turn(
-        self, model: Any, user_input: str, live: Any = None
-    ) -> tuple[str, str]:
+    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
         """Send one user message, run the tool loop, return (response, stats_line).
 
         model.act() is dispatched in a background thread with its own event loop
@@ -616,9 +611,7 @@ class Agent:
             self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
             self._session_completion_tokens += getattr(s, "predicted_tokens_count", 0) or 0
         if stats_capture:
-            self._last_prompt_tokens = (
-                getattr(stats_capture[-1], "prompt_tokens_count", 0) or 0
-            )
+            self._last_prompt_tokens = getattr(stats_capture[-1], "prompt_tokens_count", 0) or 0
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         self._turn_count += 1
@@ -690,9 +683,7 @@ class Agent:
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(
-                            model, user_input, live=live
-                        )
+                        response, stats = await self._run_turn(model, user_input, live=live)
                     self._raw_history.append(("assistant", response))
 
                     msg = Text()
