@@ -86,6 +86,7 @@ def _make_mock_model(response_text: str) -> MagicMock:
             msg = MagicMock()
             msg.content = [text_part]
             msg.role = "assistant"
+            msg.tool_calls = None
             on_message(msg)
         return MagicMock()
 
