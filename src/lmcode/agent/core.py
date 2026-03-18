@@ -114,6 +114,7 @@ def _ctx_usage_line(used: int, total: int) -> str:
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show this help message"),
     ("/clear", "Clear conversation history"),
+    ("/compact", "Summarise history to free context space"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
     ("/model", "Show the current model"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
@@ -288,6 +289,8 @@ class Agent:
         self._verbose: bool = True
         self._turn_count: int = 0
         self._compact_prompt: bool = False
+        self._model_ref: Any = None  # set after connecting, used by /compact
+        self._raw_history: list[tuple[str, str]] = []  # (role, content) pairs
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._last_prompt_tokens: int = 0  # prompt tokens of the most recent turn
@@ -326,6 +329,8 @@ class Agent:
 
         if cmd == "/clear":
             self._chat = None
+            self._raw_history.clear()
+            self._ctx_warned = False
             console.print(f"[{TEXT_MUTED}]conversation cleared[/]\n")
             return True
 
@@ -445,6 +450,75 @@ class Agent:
 
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
+
+    async def _do_compact(self) -> None:
+        """Summarise the conversation history and replace it with the summary.
+
+        Calls the model with the full raw history and asks for a concise
+        paragraph summary.  The chat is then reset and the summary injected
+        as an assistant context note so the model retains the gist of the
+        session without the full token cost.
+        """
+        if not self._raw_history or self._model_ref is None:
+            console.print(f"[{TEXT_MUTED}]nothing to compact[/]\n")
+            return
+
+        history_text = "\n".join(
+            f"{'User' if role == 'user' else 'Assistant'}: {content}"
+            for role, content in self._raw_history
+        )
+        summary_prompt = (
+            "Summarise the following conversation in one concise paragraph. "
+            "Include the key topics discussed, any decisions or conclusions, "
+            "and open questions.  Be factual and brief — no filler.\n\n"
+            + history_text
+        )
+
+        summary_chat = lms.Chat("You are a helpful summariser.")
+        summary_chat.add_user_message(summary_prompt)
+
+        summary: list[str] = []
+        with Live(
+            Spinner("bouncingBar", text=" compacting…", style=ACCENT),
+            transient=True,
+            console=console,
+        ):
+            result = await self._model_ref.respond(summary_chat)
+            if hasattr(result, "content"):
+                parts = result.content
+                summary_text = (
+                    "".join(p.text for p in parts if hasattr(p, "text"))
+                    if isinstance(parts, list)
+                    else str(parts)
+                )
+            else:
+                summary_text = str(result)
+            summary.append(summary_text.strip())
+
+        text = summary[0] if summary else "(no summary generated)"
+        msgs_compacted = len(self._raw_history)
+
+        # Reset chat, inject summary as context note.
+        self._chat = self._init_chat()
+        self._chat.add_user_message(
+            "[context from compacted history]\n" + text
+        )
+        self._raw_history.clear()
+        self._ctx_warned = False
+
+        # Show result panel.
+        from rich.panel import Panel
+
+        preview = text[:300] + ("…" if len(text) > 300 else "")
+        console.print(
+            Panel(
+                f"[{TEXT_MUTED}]{msgs_compacted} messages → 1 summary[/]\n\n"
+                + preview,
+                title="compacted",
+                border_style=ACCENT,
+            )
+        )
+        console.print()
 
     async def _run_turn(
         self, model: Any, user_input: str, live: Any = None
@@ -570,6 +644,7 @@ class Agent:
             async with lms.AsyncClient() as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
+                self._model_ref = model
                 self._max_file_bytes, self._ctx_len = await _compute_max_file_bytes(
                     model, resolved_id
                 )
@@ -601,10 +676,14 @@ class Agent:
                         break
 
                     if stripped.startswith("/"):
-                        self._handle_slash(stripped)
+                        if stripped == "/compact":
+                            await self._do_compact()
+                        else:
+                            self._handle_slash(stripped)
                         console.print(Rule(style=f"dim {ACCENT}"))
                         continue
 
+                    self._raw_history.append(("user", stripped))
                     with Live(
                         Spinner(_SPINNER, text=" thinking…", style=ACCENT),
                         transient=True,
@@ -614,6 +693,7 @@ class Agent:
                         response, stats = await self._run_turn(
                             model, user_input, live=live
                         )
+                    self._raw_history.append(("assistant", response))
 
                     msg = Text()
                     msg.append("\nlmcode", style=ACCENT_BRIGHT)
