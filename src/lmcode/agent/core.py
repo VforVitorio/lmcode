@@ -90,16 +90,44 @@ responses. Always reply in plain text or Markdown.
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show this help message"),
     ("/clear", "Clear conversation history"),
+    ("/compact", "Summarise history to free context space"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
     ("/model", "Show the current model"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),
+    ("/tokens", "Show session-wide token usage totals"),
+    ("/hide-model", "Toggle model name visibility in the prompt"),
     ("/tools", "List all available tools with their signatures"),
     ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
+
+
+# Rotate tips every N poll ticks inside _run_turn (1 tick = 100 ms).
+_TIP_ROTATE_TICKS: int = 80  # ≈ 8 seconds per tip
+
+# Context window usage indicator
+_CTX_ARCS: list[str] = ["○", "◔", "◑", "◕", "●"]
+_CTX_WARN_THRESHOLD: float = 0.80
+
+
+def _ctx_usage_line(used: int, total: int) -> str:
+    """Return a compact '◑ 48%  (15.4k / 32k tokens)' string.
+
+    *used* and *total* are token counts. Returns an empty string when
+    *total* is zero or unknown.
+    """
+    if not total:
+        return ""
+    pct = min(used / total, 1.0)
+    arc = _CTX_ARCS[min(int(pct * len(_CTX_ARCS)), len(_CTX_ARCS) - 1)]
+
+    def _k(n: int) -> str:
+        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+    return f"{arc} {pct:.0%}  ({_k(used)} / {_k(total)} tok)"
 
 
 def _print_help() -> None:
@@ -258,6 +286,14 @@ class Agent:
         self._model_display: str = ""
         self._verbose: bool = True
         self._turn_count: int = 0
+        self._compact_prompt: bool = False
+        self._model_ref: Any = None  # set after connecting, used by /compact
+        self._raw_history: list[tuple[str, str]] = []  # (role, content) pairs
+        self._session_prompt_tokens: int = 0
+        self._session_completion_tokens: int = 0
+        self._last_prompt_tokens: int = 0  # prompt tokens of the most recent turn
+        self._ctx_len: int | None = None  # model context window in tokens
+        self._ctx_warned: bool = False  # True once the 80% warning has fired
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
@@ -291,6 +327,8 @@ class Agent:
 
         if cmd == "/clear":
             self._chat = None
+            self._raw_history.clear()
+            self._ctx_warned = False
             console.print(f"[{TEXT_MUTED}]conversation cleared[/]\n")
             return True
 
@@ -352,23 +390,54 @@ class Agent:
             console.print()
             return True
 
+        if cmd == "/tokens":
+
+            def _fmt_tok(n: int) -> str:
+                return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+            p = self._session_prompt_tokens
+            c = self._session_completion_tokens
+            total = p + c
+            console.print(f"\n[{ACCENT_BRIGHT}]session tokens[/]")
+            tok_rows: list[tuple[str, str]] = [
+                ("prompt (↑)", _fmt_tok(p)),
+                ("generated (↓)", _fmt_tok(c)),
+                ("total", _fmt_tok(total)),
+            ]
+            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
+            if ctx_line:
+                tok_rows.append(("context", ctx_line))
+            for label, value in tok_rows:
+                row = Text()
+                row.append(f"  {label:<16}", style=TEXT_MUTED)
+                row.append(value)
+                console.print(row)
+            console.print()
+            return True
+
+        if cmd == "/hide-model":
+            self._compact_prompt = not self._compact_prompt
+            state = "hidden" if self._compact_prompt else "visible"
+            console.print(f"[{TEXT_MUTED}]model name {state} in prompt[/]\n")
+            return True
+
         if cmd == "/status":
-            turns = self._turn_count
-            verbose_state = "on" if self._verbose else "off"
-            tips_state = "on" if self._show_tips else "off"
-            stats_state = "on" if self._show_stats else "off"
+            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
             console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
-            rows: list[tuple[str, str]] = [
+            status_rows: list[tuple[str, str]] = [
                 ("model", self._model_display or "(none)"),
                 ("mode", self._mode),
-                ("verbose", verbose_state),
-                ("tips", tips_state),
-                ("stats", stats_state),
-                ("turns", str(turns)),
+                ("verbose", "on" if self._verbose else "off"),
+                ("tips", "on" if self._show_tips else "off"),
+                ("stats", "on" if self._show_stats else "off"),
+                ("model in prompt", "visible" if not self._compact_prompt else "hidden"),
+                ("turns", str(self._turn_count)),
             ]
-            for label, value in rows:
+            if ctx_line:
+                status_rows.append(("context", ctx_line))
+            for label, value in status_rows:
                 row = Text()
-                row.append(f"  {label:<10}", style=TEXT_MUTED)
+                row.append(f"  {label:<16}", style=TEXT_MUTED)
                 row.append(value)
                 console.print(row)
             console.print()
@@ -381,43 +450,95 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    async def _run_turn(
-        self, model: Any, user_input: str, live: Any = None, tip: str | None = None
-    ) -> tuple[str, str]:
+    async def _do_compact(self) -> None:
+        """Summarise the conversation history and replace it with the summary."""
+        if not self._raw_history or self._model_ref is None:
+            console.print(f"[{TEXT_MUTED}]nothing to compact[/]\n")
+            return
+
+        history_text = "\n".join(
+            f"{'User' if role == 'user' else 'Assistant'}: {content}"
+            for role, content in self._raw_history
+        )
+        summary_prompt = (
+            "Summarise the following conversation in one concise paragraph. "
+            "Include the key topics discussed, any decisions or conclusions, "
+            "and open questions.  Be factual and brief — no filler.\n\n" + history_text
+        )
+
+        summary_chat = lms.Chat("You are a helpful summariser.")
+        summary_chat.add_user_message(summary_prompt)
+
+        summary: list[str] = []
+        with Live(
+            Spinner("bouncingBar", text=" compacting…", style=ACCENT),
+            transient=True,
+            console=console,
+        ):
+            result = await self._model_ref.respond(summary_chat)
+            if hasattr(result, "content"):
+                parts = result.content
+                summary_text = (
+                    "".join(p.text for p in parts if hasattr(p, "text"))
+                    if isinstance(parts, list)
+                    else str(parts)
+                )
+            else:
+                summary_text = str(result)
+            summary.append(summary_text.strip())
+
+        text = summary[0] if summary else "(no summary generated)"
+        msgs_compacted = len(self._raw_history)
+
+        self._chat = self._init_chat()
+        self._chat.add_user_message("[context from compacted history]\n" + text)
+        self._raw_history.clear()
+        self._ctx_warned = False
+
+        from rich.panel import Panel
+
+        preview = text[:300] + ("…" if len(text) > 300 else "")
+        console.print(
+            Panel(
+                f"[{TEXT_MUTED}]{msgs_compacted} messages → 1 summary[/]\n\n" + preview,
+                title="compacted",
+                border_style=ACCENT,
+            )
+        )
+        console.print()
+
+    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
         """Send one user message, run the tool loop, return (response, stats_line).
 
         model.act() works on an internal copy of the chat, so we manually
         update our history with the final assistant response afterwards.
         The response text is captured via the on_message callback because
         ActResult only carries timing metadata, not the actual content.
-        If *live* is a Rich Live instance, on_prediction_fragment updates it
-        with a live token counter: '⠋ thinking…  42 tok'.
-        If *tip* is provided, it is shown as a second line below the spinner.
+        If *live* is a Rich Live instance, a keepalive task updates the spinner
+        every 100 ms and rotates tips every 8 s.
         When self._verbose is True, each tool is wrapped to print its call
         and result before being passed to model.act().
-        Tool call messages update the spinner with the active file path.
+        Tool call messages update active_label so the keepalive task can reflect
+        the active file path in the spinner.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
 
         captured: list[str] = []
+        active_label: list[str] = [" thinking…"]
 
         def _on_message(msg: Any) -> None:
-            """Update spinner with active file on tool calls; capture assistant text.
+            """Update active_label with active file on tool calls; capture assistant text.
 
-            For tool call messages, extracts the path argument and updates the
-            Live spinner label to show which file is being read or written.
+            For tool call messages, extracts the path argument and sets the
+            active_label so the keepalive task reflects the active file in the spinner.
             For assistant messages, joins content parts and stores in captured.
             """
-            if hasattr(msg, "tool_calls") and msg.tool_calls and live is not None:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
-                        label = f" {tc.name} {path[-40:]}"
-                        rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
-                        if tip:
-                            rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
-                        live.update(RenderGroup(*rows))
+                        active_label[0] = f" {tc.name} {path[-40:]}"
             elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
@@ -436,24 +557,53 @@ class Agent:
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens and update the Live spinner with tip if provided."""
+            """Count generated tokens and update active_label with tok count."""
             tok_count[0] += 1
-            if live is not None:
-                rows: list[Any] = [
-                    Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok", style=ACCENT)
-                ]
-                if tip:
-                    rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
-                live.update(RenderGroup(*rows))
+            active_label[0] = f" thinking…  {tok_count[0]} tok"
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
-        act_result = await model.act(
-            chat,
-            tools=tools,
-            on_message=_on_message,
-            on_prediction_completed=_on_prediction_completed,
-            on_prediction_fragment=_on_fragment,
-        )
+
+        # Keepalive task: updates the spinner label every 100 ms on the main
+        # event loop. model.act() must stay on the main loop (the SDK's
+        # AsyncTaskManager is bound to it). The task runs whenever model.act()
+        # yields back to the loop (async HTTP I/O during prefill).
+        stop_evt = asyncio.Event()
+        shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
+
+        async def _keepalive() -> None:
+            """Update spinner label every 100 ms; rotate tips every 8 s."""
+            tip_idx = 0
+            tick = 0
+            while not stop_evt.is_set():
+                if live is not None:
+                    if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
+                        tip_idx = (tip_idx + 1) % len(shuffled_tips)
+                    rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
+                    if shuffled_tips:
+                        rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
+                    live.update(RenderGroup(*rows))
+                tick += 1
+                await asyncio.sleep(0.1)
+
+        keepalive = asyncio.create_task(_keepalive())
+        try:
+            act_result = await model.act(
+                chat,
+                tools=tools,
+                on_message=_on_message,
+                on_prediction_completed=_on_prediction_completed,
+                on_prediction_fragment=_on_fragment,
+            )
+        finally:
+            stop_evt.set()
+            await keepalive
+
+        # Accumulate session-wide token counts for /tokens command.
+        for s in stats_capture:
+            self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
+            self._session_completion_tokens += getattr(s, "predicted_tokens_count", 0) or 0
+        if stats_capture:
+            self._last_prompt_tokens = getattr(stats_capture[-1], "prompt_tokens_count", 0) or 0
 
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
@@ -480,7 +630,10 @@ class Agent:
             async with lms.AsyncClient() as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
-                self._max_file_bytes = await _compute_max_file_bytes(model, resolved_id)
+                self._model_ref = model
+                self._max_file_bytes, self._ctx_len = await _compute_max_file_bytes(
+                    model, resolved_id
+                )
                 get_settings().agent.max_file_bytes = self._max_file_bytes
                 console.print(build_status_line(resolved_id) + "\n")
                 _print_startup_tip()
@@ -488,7 +641,11 @@ class Agent:
                 while True:
                     try:
                         user_input = await session.prompt_async(
-                            lambda: build_prompt(self._model_display, self._mode)
+                            lambda: build_prompt(
+                                self._model_display,
+                                self._mode,
+                                compact=self._compact_prompt,
+                            )
                         )
                     except EOFError:
                         break
@@ -505,24 +662,25 @@ class Agent:
                         break
 
                     if stripped.startswith("/"):
-                        self._handle_slash(stripped)
+                        if stripped == "/compact":
+                            await self._do_compact()
+                        else:
+                            self._handle_slash(stripped)
                         console.print(Rule(style=f"dim {ACCENT}"))
                         continue
 
-                    tip = random.choice(_TIPS) if self._show_tips else None
                     initial: Any = RenderGroup(
                         Spinner(_SPINNER, text=" thinking…", style=ACCENT),
-                        Text(f"  {tip}", style=f"dim {ACCENT}") if tip else Text(""),
                     )
+                    self._raw_history.append(("user", stripped))
                     with Live(
                         initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(
-                            model, user_input, live=live, tip=tip
-                        )
+                        response, stats = await self._run_turn(model, user_input, live=live)
+                    self._raw_history.append(("assistant", response))
 
                     msg = Text()
                     msg.append("\nlmcode", style=ACCENT_BRIGHT)
@@ -532,6 +690,16 @@ class Agent:
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
+                    if self._ctx_len and not self._ctx_warned:
+                        used = self._last_prompt_tokens
+                        if used and used / self._ctx_len >= _CTX_WARN_THRESHOLD:
+                            self._ctx_warned = True
+                            console.print(
+                                f"\n[{WARNING}]context at "
+                                f"{used / self._ctx_len:.0%}[/]"
+                                f"[{TEXT_MUTED}] — run /compact to summarise "
+                                f"the conversation[/]"
+                            )
                     console.print(Rule(style=f"dim {ACCENT}"))
 
         except SystemExit:
@@ -639,13 +807,14 @@ def _ctx_len_from_name(model_id: str) -> int | None:
     return None
 
 
-async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
+async def _compute_max_file_bytes(model: Any, model_id: str) -> tuple[int, int | None]:
     """Query the model's actual context length and derive a file-byte cap.
 
     Queries ``model.get_context_length()`` first; on failure, falls back to
     a heuristic derived from the model identifier, then to the config default.
 
     The formula is:  clamp(ctx_tokens * bytes_per_token * fraction, 50_000, 500_000)
+    Returns a (max_file_bytes, ctx_len) tuple; ctx_len may be None if unknown.
     """
     ctx_len: int | None = None
     try:
@@ -655,9 +824,9 @@ async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
 
     if ctx_len is not None and ctx_len > 0:
         computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
-        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES))
+        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES)), ctx_len
 
-    return get_settings().agent.max_file_bytes
+    return get_settings().agent.max_file_bytes, ctx_len
 
 
 def run_chat(model_id: str = "auto") -> None:
