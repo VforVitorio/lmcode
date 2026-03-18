@@ -52,6 +52,26 @@ LM Studio   →   lmcode agent   →   your codebase
 - **OpenAPI → MCP** — point lmcode at any OpenAPI spec and the endpoints become agent tools automatically (powered by [FastMCP](https://github.com/jlowin/fastmcp))
 - **Plugin system** — extend lmcode with plugins via entry points (pluggy-based)
 - **LMCODE.md** — per-repo memory file, like CLAUDE.md
+- **/compact** — summarises conversation history via the model, resets the chat, and injects the summary as context; shows a panel with summary preview and message count saved
+- **/tokens** — displays session-wide prompt (↑) and generated (↓) token totals, plus a context arc line (`◔ 38%  (14.2k / 32k tok)`)
+- **/hide-model** — toggles the model name in the live prompt (`● lmcode (model) [ask] ›` vs `● lmcode [ask] ›`)
+- **Cycling tips** — tips below the thinking spinner rotate every 8 seconds through a shuffled list
+- **Context window indicator** — arc chars `○◔◑◕●` with percentage shown in `/status` and `/tokens`; one-time warning at 80 % usage suggesting `/compact`
+- **Spinner keepalive** — asyncio keepalive task refreshes the spinner label every 100 ms during model prefill, preventing display freezes
+
+## Slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available slash commands |
+| `/status` | Show session stats, model info, and context window usage |
+| `/tokens` | Show session prompt (↑) and generated (↓) token totals with context arc |
+| `/compact` | Summarise history, reset chat, inject summary as context |
+| `/hide-model` | Toggle model name visibility in the live prompt |
+| `/verbose` | Toggle verbose tool-call output |
+| `/tips` | Toggle cycling tips below the thinking spinner |
+| `/stats` | Toggle per-turn stats line after each response |
+| `/tools` | List all registered tools |
 
 ---
 
@@ -212,7 +232,15 @@ uv run pytest
 - [ ] OpenAPI → MCP
 - [ ] Plugin system
 
-**v0.3 — Session viewer**
+**v0.3 — UX polish** ✓
+- [x] `/compact` — summarise history and reset chat (#31)
+- [x] `/tokens` — session token totals and context arc (#29)
+- [x] `/hide-model` — toggle model name in prompt (#36)
+- [x] Cycling tips — rotate every 8 s during thinking (#38)
+- [x] Context window indicator — arc + % in `/status` and `/tokens` (#41)
+- [x] Spinner keepalive — asyncio task keeps label fresh during prefill (#39)
+
+**v0.4 — Session viewer**
 - [ ] Textual TUI
 - [ ] Diff viewer
 - [ ] Session replay
