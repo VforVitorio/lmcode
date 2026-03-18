@@ -41,14 +41,15 @@ def build_status_line(model: str) -> str:
     return f"[{_SUCCESS}]●[/]  [{_ACCENT}]lmcode{model_str}[/]  [{_MUTED}]connected[/]"
 
 
-def build_prompt(model: str, mode: str) -> HTML:
+def build_prompt(model: str, mode: str, *, compact: bool = False) -> HTML:
     """Return the prompt HTML for prompt_toolkit, including model and mode.
 
     Example: ● lmcode (qwen2.5-1.5b-instruct)  [ask]  ›
+    When *compact* is True the model name is omitted: ● lmcode  [ask]  ›
     Called on every redraw, so Tab-cycling the mode updates it in-place.
     """
     color = _MODE_COLORS.get(mode, _MUTED)
-    model_str = f" ({model})" if model else ""
+    model_str = f" ({model})" if (model and not compact) else ""
     return HTML(
         f'<style fg="{_SUCCESS}">●</style>'
         f'  <style fg="{_ACCENT}">lmcode{model_str}</style>'

@@ -96,11 +96,16 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),
+    ("/tokens", "Show session-wide token usage totals"),
+    ("/compact-prompt", "Toggle model name visibility in the prompt"),
     ("/tools", "List all available tools with their signatures"),
     ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
+
+# Rotate tips every N poll ticks inside _run_turn (1 tick = 100 ms).
+_TIP_ROTATE_TICKS: int = 30  # ≈ 3 seconds per tip
 
 
 def _print_help() -> None:
@@ -259,6 +264,9 @@ class Agent:
         self._model_display: str = ""
         self._verbose: bool = True
         self._turn_count: int = 0
+        self._compact_prompt: bool = False
+        self._session_prompt_tokens: int = 0
+        self._session_completion_tokens: int = 0
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
@@ -375,6 +383,31 @@ class Agent:
             console.print()
             return True
 
+        if cmd == "/tokens":
+            def _fmt_tok(n: int) -> str:
+                return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+            p = self._session_prompt_tokens
+            c = self._session_completion_tokens
+            console.print(f"\n[{ACCENT_BRIGHT}]session tokens[/]")
+            for label, value in [
+                ("prompt (↑)", _fmt_tok(p)),
+                ("generated (↓)", _fmt_tok(c)),
+                ("total", _fmt_tok(p + c)),
+            ]:
+                row = Text()
+                row.append(f"  {label:<16}", style=TEXT_MUTED)
+                row.append(value)
+                console.print(row)
+            console.print()
+            return True
+
+        if cmd == "/compact-prompt":
+            self._compact_prompt = not self._compact_prompt
+            state = "on" if self._compact_prompt else "off"
+            console.print(f"[{TEXT_MUTED}]compact prompt {state}[/]\n")
+            return True
+
         if cmd == "/version":
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
@@ -383,7 +416,7 @@ class Agent:
         return True
 
     async def _run_turn(
-        self, model: Any, user_input: str, live: Any = None, tip: str | None = None
+        self, model: Any, user_input: str, live: Any = None
     ) -> tuple[str, str]:
         """Send one user message, run the tool loop, return (response, stats_line).
 
@@ -464,12 +497,19 @@ class Agent:
         thread.start()
 
         # Main loop: refresh the spinner every 100 ms regardless of model state.
+        # Tips rotate every _TIP_ROTATE_TICKS ticks (≈ 3 s each).
+        shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
+        tip_idx = 0
+        poll_tick = 0
         while not done_evt.is_set():
             if live is not None:
+                if shuffled_tips and poll_tick > 0 and poll_tick % _TIP_ROTATE_TICKS == 0:
+                    tip_idx = (tip_idx + 1) % len(shuffled_tips)
                 rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
-                if tip:
-                    rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
+                if shuffled_tips:
+                    rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
                 live.update(RenderGroup(*rows))
+            poll_tick += 1
             await asyncio.sleep(0.1)
 
         thread.join()
@@ -478,6 +518,10 @@ class Agent:
             raise error_holder[0]
 
         act_result = result_holder[0]
+        # Accumulate session-wide token counts for /tokens command.
+        for s in stats_capture:
+            self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
+            self._session_completion_tokens += getattr(s, "predicted_tokens_count", 0) or 0
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         self._turn_count += 1
@@ -511,7 +555,11 @@ class Agent:
                 while True:
                     try:
                         user_input = await session.prompt_async(
-                            lambda: build_prompt(self._model_display, self._mode)
+                            lambda: build_prompt(
+                                self._model_display,
+                                self._mode,
+                                compact=self._compact_prompt,
+                            )
                         )
                     except EOFError:
                         break
@@ -532,19 +580,14 @@ class Agent:
                         console.print(Rule(style=f"dim {ACCENT}"))
                         continue
 
-                    tip = random.choice(_TIPS) if self._show_tips else None
-                    initial: Any = RenderGroup(
-                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
-                        Text(f"  {tip}", style=f"dim {ACCENT}") if tip else Text(""),
-                    )
                     with Live(
-                        initial,
+                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
                         response, stats = await self._run_turn(
-                            model, user_input, live=live, tip=tip
+                            model, user_input, live=live
                         )
 
                     msg = Text()
