@@ -25,7 +25,7 @@
 
 ---
 
-**lmcode** is a coding agent for your terminal that runs entirely on your machine using [LM Studio](https://lmstudio.ai) as the inference backend. Think Claude Code or Aider, but local, open source, and extensible via plugins and MCP servers.
+**lmcode** is a coding agent for your terminal that runs entirely on your machine using [LM Studio](https://lmstudio.ai) as the inference backend. Think Claude Code or Aider, but local, open source, and extensible.
 
 > **This project is under active development. The API and features are not stable yet.**
 
@@ -42,16 +42,24 @@ LM Studio   →   lmcode agent   →   your codebase
 
 ---
 
-## Features
+## Features (v0.2.0)
 
 - **Agent loop** — iterative tool-calling loop powered by `model.act()` from the LM Studio Python SDK
-- **Coding tools** — read files, write files, run shell commands, search code, run tests
-- **Session recorder** — every agent action saved as a structured event stream (JSONL)
-- **Session viewer** — TUI timeline of what the agent did, with diff viewer and replay
-- **MCP support** — connect any [MCP](https://modelcontextprotocol.io) server to give the agent new capabilities
-- **OpenAPI → MCP** — point lmcode at any OpenAPI spec and the endpoints become agent tools automatically (powered by [FastMCP](https://github.com/jlowin/fastmcp))
-- **Plugin system** — extend lmcode with plugins via entry points (pluggy-based)
-- **LMCODE.md** — per-repo memory file, like CLAUDE.md
+- **Auto-detect model** — connects to whatever model is loaded in LM Studio; no config needed
+- **Coding tools** — `read_file`, `write_file`, `list_files`, `run_shell`, `search_code`
+- **Three permission modes** — `ask` (confirm each tool call), `auto` (run tools freely), `strict` (no tools, pure chat)
+- **Tab key mode cycling** — press Tab to cycle ask → auto → strict without breaking the prompt line
+- **Slash commands** — `/help`, `/clear`, `/mode`, `/model`, `/verbose`, `/tips`, `/stats`, `/tokens`, `/hide-model`, `/tools`, `/status`, `/version`, `/exit`
+- **Context window tracking** — token usage indicator (`◔ 48%` style) in `/status` and `/tokens`; warns at 80%
+- **Per-response token stats** — right-aligned `↑ 1.2k  ↓ 384  ·  45 tok/s  ·  2.3s`, toggleable via `/stats`
+- **Token-aware file read limit** — `read_file` byte cap derived from the model's actual context window
+- **Spinner with rotating tips** — dots-style spinner; tips rotate every 8 s during inference
+- **Separator Rule** — plain dim rule between exchanges keeps the scrollback clean
+- **Submitted messages rewritten** — input line replaced in-place with a dim history entry after submission
+- **Responsive banner** — compact layout under 90 columns
+- **Early exit on startup failures** — clear error messages if LM Studio is unreachable or no model is loaded
+- **UISettings** — configure `spinner`, `show_tips`, `show_stats` in `lmcode.toml`
+- **LMCODE.md** — per-repo memory file, like CLAUDE.md — injected into the system prompt automatically
 
 ---
 
@@ -59,9 +67,14 @@ LM Studio   →   lmcode agent   →   your codebase
 
 | Component | Status |
 |---|---|
-| CLI skeleton (Typer + Rich) | 🔲 planned |
-| LM Studio adapter | 🔲 planned |
-| Agent loop + basic tools | 🔲 planned |
+| CLI (`lmcode` command) | ✅ done |
+| LM Studio adapter | ✅ done |
+| Agent loop + tools | ✅ done |
+| Permission modes (ask/auto/strict) | ✅ done |
+| Context window tracking | ✅ done |
+| Token stats | ✅ done |
+| LMCODE.md support | ✅ done |
+| UISettings (toml) | ✅ done |
 | Session recorder | 🔲 planned |
 | MCP client | 🔲 planned |
 | OpenAPI → MCP dynamic servers | 🔲 planned |
@@ -74,7 +87,7 @@ LM Studio   →   lmcode agent   →   your codebase
 ## Requirements
 
 - Python 3.11+
-- [LM Studio](https://lmstudio.ai) running locally with a model loaded
+- [LM Studio](https://lmstudio.ai) running locally with a model loaded and the local server enabled
 - [uv](https://docs.astral.sh/uv) (recommended) or pip
 
 ---
@@ -104,20 +117,17 @@ pip install lmcode
 
 ## Quick start
 
-Make sure LM Studio is running with a model loaded and the local server enabled.
+Make sure LM Studio is running with a model loaded and the local server enabled (Developer → Start Server).
 
 ```bash
-# start a chat session in the current repo
+# start a session — model is auto-detected from LM Studio
+lmcode
+
+# or explicitly via the chat subcommand
 lmcode chat
 
-# ask the agent to do something
-lmcode run "fix the failing tests in src/api/"
-
-# view what the agent did in the last session
-lmcode session view
-
-# connect an OpenAPI spec as tools
-lmcode mcp add --openapi https://petstore3.swagger.io/api/v3/openapi.json
+# specify a model by ID
+lmcode chat --model "qwen2.5-coder-7b-instruct"
 ```
 
 ---
@@ -125,45 +135,90 @@ lmcode mcp add --openapi https://petstore3.swagger.io/api/v3/openapi.json
 ## How it works
 
 ```
-lmcode chat
+lmcode
      │
      ▼
-Agent Core
+Agent Core  (src/lmcode/agent/core.py)
      │
      ├── LM Studio SDK (model.act)
      │
      ├── Tool Runner
-     │      ├── read_file / write_file / list_files
-     │      ├── run_shell
-     │      ├── search_code (ripgrep)
-     │      ├── git (status, diff, commit)
-     │      └── [MCP tools, plugin tools]
+     │      ├── read_file / write_file / list_files  (filesystem.py)
+     │      ├── run_shell                             (shell.py)
+     │      └── search_code                          (search.py)
      │
-     └── Session Recorder
-            │
-            ▼
-       sessions/session_001.jsonl
+     └── UI
+            ├── Spinner + rotating tips
+            ├── Separator Rule between exchanges
+            └── Token stats + context usage
 ```
 
-### MCP + OpenAPI
+### Permission modes
 
-lmcode can dynamically create MCP servers from OpenAPI specs using [FastMCP](https://github.com/jlowin/fastmcp):
+| Mode | Behaviour |
+|------|-----------|
+| `ask` | Confirms before each tool call (default) |
+| `auto` | Tools run automatically |
+| `strict` | No tools — pure chat only |
 
-```bash
-# any REST API becomes agent tools
-lmcode mcp add --openapi ./my-api-spec.yaml --name my-api
+Press **Tab** at the prompt to cycle modes in-place, or use `/mode [ask|auto|strict]`.
+
+### Slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show the command reference |
+| `/clear` | Reset conversation history |
+| `/mode [ask\|auto\|strict]` | Show or change the permission mode |
+| `/model` | Show the current loaded model |
+| `/verbose` | Toggle tool call visibility |
+| `/tips` | Toggle rotating tips during thinking |
+| `/stats` | Toggle per-response token stats |
+| `/tokens` | Show session-wide token usage totals |
+| `/hide-model` | Toggle model name in the prompt |
+| `/tools` | List available tools with their signatures |
+| `/status` | Show current session state |
+| `/version` | Show the running lmcode version |
+| `/exit` | Exit lmcode |
+
+### LMCODE.md
+
+Place a `LMCODE.md` file in your project root (or any parent directory) to inject project-specific context into the agent's system prompt:
+
+```markdown
+# LMCODE.md
+
+This project uses Python 3.12+ and uv.
+Never use `pip install` directly — always use `uv add`.
+Run tests with `uv run pytest`.
 ```
 
-Under the hood, FastMCP parses the spec and generates MCP-compatible tools for each endpoint. The agent can then call those tools natively in its loop.
+---
 
-### Plugin system
+## Configuration
 
-```bash
-pip install lmcode-docker-plugin
-# plugin is auto-discovered via entry_points — no config needed
+lmcode reads `lmcode.toml` from the platform config directory:
+
+- Linux: `~/.config/lmcode/lmcode.toml`
+- macOS: `~/Library/Application Support/lmcode/lmcode.toml`
+- Windows: `%APPDATA%\lmcode\lmcode.toml`
+
+```toml
+[lmstudio]
+host = "localhost"
+port = 1234
+model = "auto"
+
+[agent]
+max_rounds = 50
+permission_mode = "ask"
+timeout_seconds = 30
+
+[ui]
+spinner = "dots"
+show_tips = true
+show_stats = true
 ```
-
-Third-party plugins can add new tools, hooks, and MCP servers by implementing pluggy hookspecs.
 
 ---
 
@@ -171,14 +226,11 @@ Third-party plugins can add new tools, hooks, and MCP servers by implementing pl
 
 ```
 src/lmcode/
-├── cli/          # Typer commands
-├── agent/        # agent loop and context management
+├── cli/          # Typer commands (app.py, chat.py, ...)
+├── agent/        # agent loop and core logic
 ├── tools/        # built-in coding tools
-├── mcp/          # MCP client + OpenAPI → MCP dynamic servers
-├── plugins/      # pluggy hookspecs and manager
-├── session/      # recorder, storage, event models
-├── ui/           # Textual TUI session viewer
-└── config/       # settings and LMCODE.md handling
+├── config/       # settings, paths, LMCODE.md handling
+└── ui/           # colors, banner, status rendering
 ```
 
 ---
@@ -202,20 +254,22 @@ uv run pytest
 
 ## Roadmap
 
-**v0.1 — MVP**
-- [ ] `lmcode chat` with basic tools
-- [ ] Session recording
-- [ ] Auto-connect to LM Studio
+**v0.2 — current**
+- [x] `lmcode` command with auto-detected model
+- [x] Tools: read_file, write_file, list_files, run_shell, search_code
+- [x] Permission modes: ask / auto / strict
+- [x] Slash commands, Tab mode cycling
+- [x] Context window usage tracking
+- [x] Token stats, UISettings
 
-**v0.2 — MCP + plugins**
+**v0.3 — Session recorder**
+- [ ] JSONL event stream per session
+- [ ] `lmcode session list / view`
+
+**v0.4 — MCP + plugins**
 - [ ] MCP client
-- [ ] OpenAPI → MCP
-- [ ] Plugin system
-
-**v0.3 — Session viewer**
-- [ ] Textual TUI
-- [ ] Diff viewer
-- [ ] Session replay
+- [ ] OpenAPI → MCP dynamic servers
+- [ ] Plugin system (pluggy)
 
 **v1.0**
 - [ ] Stable API

@@ -1,6 +1,8 @@
 # Session Recording
 
-Every agent run is recorded as a JSONL file in `~/.local/share/lmcode/sessions/` (or the platform equivalent via platformdirs).
+> Session recording is planned for a future release. This document describes the intended design.
+
+Every agent run will be recorded as a JSONL file in `~/.local/share/lmcode/sessions/` (or the platform equivalent via platformdirs).
 
 ## File format
 
@@ -44,9 +46,8 @@ SessionEvent = (
 
 ## Session viewer
 
-> Coming in `feat/session-viewer`.
+`lmcode session view <id>` will open a [Textual](https://textual.textualize.io/) TUI with:
 
-`lmcode session view <id>` opens a [Textual](https://textual.textualize.io/) TUI with:
 - Timeline of events on the left
 - Full message/diff content on the right
 - Keyboard navigation through tool calls and edits

@@ -26,8 +26,13 @@ uv run pytest
 
 ```bash
 uv run lmcode --help
+
+# start a session (model auto-detected from LM Studio)
+uv run lmcode
+
+# or with the explicit subcommand
 uv run lmcode chat
-uv run lmcode chat --model "llama-3.2-3b-instruct" --max-rounds 20
+uv run lmcode chat --model "qwen2.5-coder-7b-instruct" --max-rounds 20
 ```
 
 ## Running tests

@@ -6,7 +6,6 @@ import asyncio
 import functools
 import inspect
 import random
-import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -85,6 +84,30 @@ responses. Always reply in plain text or Markdown.
 """
 
 # ---------------------------------------------------------------------------
+# Context window usage indicator
+# ---------------------------------------------------------------------------
+
+_CTX_ARCS: list[str] = ["○", "◔", "◑", "◕", "●"]
+_CTX_WARN_THRESHOLD: float = 0.80
+
+
+def _ctx_usage_line(used: int, total: int) -> str:
+    """Return a compact '◑ 48%  (15.4k / 32k tokens)' string.
+
+    *used* and *total* are token counts.  Returns an empty string when
+    *total* is zero or unknown.
+    """
+    if not total:
+        return ""
+    pct = min(used / total, 1.0)
+    arc = _CTX_ARCS[min(int(pct * len(_CTX_ARCS)), len(_CTX_ARCS) - 1)]
+
+    def _k(n: int) -> str:
+        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+    return f"{arc} {pct:.0%}  ({_k(used)} / {_k(total)} tok)"
+
+
 # Slash commands
 # ---------------------------------------------------------------------------
 
@@ -97,7 +120,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),
     ("/tokens", "Show session-wide token usage totals"),
-    ("/compact-prompt", "Toggle model name visibility in the prompt"),
+    ("/hide-model", "Toggle model name visibility in the prompt"),
     ("/tools", "List all available tools with their signatures"),
     ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
@@ -105,7 +128,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
 ]
 
 # Rotate tips every N poll ticks inside _run_turn (1 tick = 100 ms).
-_TIP_ROTATE_TICKS: int = 30  # ≈ 3 seconds per tip
+_TIP_ROTATE_TICKS: int = 80  # ≈ 8 seconds per tip
 
 
 def _print_help() -> None:
@@ -267,6 +290,9 @@ class Agent:
         self._compact_prompt: bool = False
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
+        self._last_prompt_tokens: int = 0  # prompt tokens of the most recent turn
+        self._ctx_len: int | None = None  # model context window in tokens
+        self._ctx_warned: bool = False  # True once the 80% warning has fired
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
@@ -362,22 +388,22 @@ class Agent:
             return True
 
         if cmd == "/status":
-            turns = self._turn_count
-            verbose_state = "on" if self._verbose else "off"
-            tips_state = "on" if self._show_tips else "off"
-            stats_state = "on" if self._show_stats else "off"
+            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
             console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
-            rows: list[tuple[str, str]] = [
+            status_rows: list[tuple[str, str]] = [
                 ("model", self._model_display or "(none)"),
                 ("mode", self._mode),
-                ("verbose", verbose_state),
-                ("tips", tips_state),
-                ("stats", stats_state),
-                ("turns", str(turns)),
+                ("verbose", "on" if self._verbose else "off"),
+                ("tips", "on" if self._show_tips else "off"),
+                ("stats", "on" if self._show_stats else "off"),
+                ("model in prompt", "visible" if not self._compact_prompt else "hidden"),
+                ("turns", str(self._turn_count)),
             ]
-            for label, value in rows:
+            if ctx_line:
+                status_rows.append(("context", ctx_line))
+            for label, value in status_rows:
                 row = Text()
-                row.append(f"  {label:<10}", style=TEXT_MUTED)
+                row.append(f"  {label:<16}", style=TEXT_MUTED)
                 row.append(value)
                 console.print(row)
             console.print()
@@ -389,12 +415,17 @@ class Agent:
 
             p = self._session_prompt_tokens
             c = self._session_completion_tokens
+            total = p + c
             console.print(f"\n[{ACCENT_BRIGHT}]session tokens[/]")
-            for label, value in [
+            tok_rows: list[tuple[str, str]] = [
                 ("prompt (↑)", _fmt_tok(p)),
                 ("generated (↓)", _fmt_tok(c)),
-                ("total", _fmt_tok(p + c)),
-            ]:
+                ("total", _fmt_tok(total)),
+            ]
+            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
+            if ctx_line:
+                tok_rows.append(("context", ctx_line))
+            for label, value in tok_rows:
                 row = Text()
                 row.append(f"  {label:<16}", style=TEXT_MUTED)
                 row.append(value)
@@ -402,10 +433,10 @@ class Agent:
             console.print()
             return True
 
-        if cmd == "/compact-prompt":
+        if cmd == "/hide-model":
             self._compact_prompt = not self._compact_prompt
-            state = "on" if self._compact_prompt else "off"
-            console.print(f"[{TEXT_MUTED}]compact prompt {state}[/]\n")
+            state = "hidden" if self._compact_prompt else "visible"
+            console.print(f"[{TEXT_MUTED}]model name {state} in prompt[/]\n")
             return True
 
         if cmd == "/version":
@@ -466,62 +497,54 @@ class Agent:
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
 
-        # --- Background thread: runs model.act() with its own event loop so
-        #     synchronous tools do not stall the main asyncio event loop. -----
-        main_loop = asyncio.get_event_loop()
-        done_evt = asyncio.Event()
-        result_holder: list[Any] = [None]
-        error_holder: list[BaseException | None] = [None]
-
-        def _model_thread() -> None:
-            """Entry point for the model thread — owns a private asyncio event loop."""
-            thread_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(thread_loop)
-            try:
-                result_holder[0] = thread_loop.run_until_complete(
-                    model.act(
-                        chat,
-                        tools=tools,
-                        on_message=_on_message,
-                        on_prediction_completed=_on_prediction_completed,
-                        on_prediction_fragment=_on_fragment,
-                    )
-                )
-            except BaseException as exc:  # noqa: BLE001
-                error_holder[0] = exc
-            finally:
-                thread_loop.close()
-                main_loop.call_soon_threadsafe(done_evt.set)
-
-        thread = threading.Thread(target=_model_thread, daemon=True)
-        thread.start()
-
-        # Main loop: refresh the spinner every 100 ms regardless of model state.
-        # Tips rotate every _TIP_ROTATE_TICKS ticks (≈ 3 s each).
+        # Keepalive task: updates the spinner label every 100 ms on the main
+        # event loop.  model.act() must stay on the main loop (the SDK's
+        # AsyncTaskManager is bound to it), so we use create_task instead of
+        # a background thread.  The task runs whenever model.act() yields back
+        # to the loop (async HTTP I/O during prefill and between tool calls).
+        # Synchronous tool execution briefly blocks the loop, but Rich's own
+        # auto_refresh thread keeps the spinner dots animated during that gap.
+        stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
-        tip_idx = 0
-        poll_tick = 0
-        while not done_evt.is_set():
-            if live is not None:
-                if shuffled_tips and poll_tick > 0 and poll_tick % _TIP_ROTATE_TICKS == 0:
-                    tip_idx = (tip_idx + 1) % len(shuffled_tips)
-                rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
-                if shuffled_tips:
-                    rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
-                live.update(RenderGroup(*rows))
-            poll_tick += 1
-            await asyncio.sleep(0.1)
 
-        thread.join()
+        async def _keepalive() -> None:
+            """Update spinner label every 100 ms; rotate tips every 8 s."""
+            tip_idx = 0
+            tick = 0
+            while not stop_evt.is_set():
+                if live is not None:
+                    if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
+                        tip_idx = (tip_idx + 1) % len(shuffled_tips)
+                    rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
+                    if shuffled_tips:
+                        rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
+                    live.update(RenderGroup(*rows))
+                tick += 1
+                await asyncio.sleep(0.1)
 
-        if error_holder[0] is not None:
-            raise error_holder[0]
-
-        act_result = result_holder[0]
+        keepalive = asyncio.create_task(_keepalive())
+        try:
+            act_result = await model.act(
+                chat,
+                tools=tools,
+                on_message=_on_message,
+                on_prediction_completed=_on_prediction_completed,
+                on_prediction_fragment=_on_fragment,
+            )
+        finally:
+            stop_evt.set()
+            await keepalive
         # Accumulate session-wide token counts for /tokens command.
+        # _last_prompt_tokens tracks the most recent turn's prompt size, which
+        # equals the current conversation history size in tokens — the right
+        # value to compare against the model's context window.
         for s in stats_capture:
             self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
             self._session_completion_tokens += getattr(s, "predicted_tokens_count", 0) or 0
+        if stats_capture:
+            self._last_prompt_tokens = (
+                getattr(stats_capture[-1], "prompt_tokens_count", 0) or 0
+            )
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         self._turn_count += 1
@@ -547,7 +570,9 @@ class Agent:
             async with lms.AsyncClient() as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
-                self._max_file_bytes = await _compute_max_file_bytes(model, resolved_id)
+                self._max_file_bytes, self._ctx_len = await _compute_max_file_bytes(
+                    model, resolved_id
+                )
                 get_settings().agent.max_file_bytes = self._max_file_bytes
                 console.print(build_status_line(resolved_id) + "\n")
                 _print_startup_tip()
@@ -597,6 +622,19 @@ class Agent:
                     console.print(msg, highlight=False)
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
+                    # One-time warning when context window is ≥ 80% full.
+                    # Use last-turn prompt tokens: that equals the current
+                    # conversation history size sent to the model in one request.
+                    if self._ctx_len and not self._ctx_warned:
+                        used = self._last_prompt_tokens
+                        if used and used / self._ctx_len >= _CTX_WARN_THRESHOLD:
+                            self._ctx_warned = True
+                            console.print(
+                                f"\n[{WARNING}]context at "
+                                f"{used / self._ctx_len:.0%}[/]"
+                                f"[{TEXT_MUTED}] — run /compact to summarise "
+                                f"the conversation[/]"
+                            )
                     console.print()
                     console.print(Rule(style=f"dim {ACCENT}"))
 
@@ -705,13 +743,16 @@ def _ctx_len_from_name(model_id: str) -> int | None:
     return None
 
 
-async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
+async def _compute_max_file_bytes(model: Any, model_id: str) -> tuple[int, int | None]:
     """Query the model's actual context length and derive a file-byte cap.
 
     Queries ``model.get_context_length()`` first; on failure, falls back to
     a heuristic derived from the model identifier, then to the config default.
 
     The formula is:  clamp(ctx_tokens * bytes_per_token * fraction, 50_000, 500_000)
+
+    Returns a tuple of (max_file_bytes, ctx_len_tokens) so the caller can
+    store the raw context length for usage tracking.
     """
     ctx_len: int | None = None
     try:
@@ -721,9 +762,9 @@ async def _compute_max_file_bytes(model: Any, model_id: str) -> int:
 
     if ctx_len is not None and ctx_len > 0:
         computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
-        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES))
+        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES)), ctx_len
 
-    return get_settings().agent.max_file_bytes
+    return get_settings().agent.max_file_bytes, ctx_len
 
 
 def run_chat(model_id: str = "auto") -> None:
