@@ -6,6 +6,7 @@ import asyncio
 import functools
 import inspect
 import random
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -386,38 +387,31 @@ class Agent:
     ) -> tuple[str, str]:
         """Send one user message, run the tool loop, return (response, stats_line).
 
-        model.act() works on an internal copy of the chat, so we manually
-        update our history with the final assistant response afterwards.
-        The response text is captured via the on_message callback because
-        ActResult only carries timing metadata, not the actual content.
-        If *live* is a Rich Live instance, on_prediction_fragment updates it
-        with a live token counter: '⠋ thinking…  42 tok'.
-        If *tip* is provided, it is shown as a second line below the spinner.
-        When self._verbose is True, each tool is wrapped to print its call
-        and result before being passed to model.act().
-        Tool call messages update the spinner with the active file path.
+        model.act() is dispatched in a background thread with its own event loop
+        so that synchronous tool execution (read_file, run_shell, etc.) does not
+        block the main asyncio loop.  The main loop polls every 100 ms and drives
+        all live.update() calls, keeping the spinner animated throughout prefill
+        and tool execution phases.
+
+        Callbacks only update shared-state lists — they never touch the Live
+        display directly, which avoids cross-thread Rich Console conflicts.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
 
         captured: list[str] = []
+        stats_capture: list[Any] = []
+        tok_count: list[int] = [0]
+        # Spinner label updated by callbacks; consumed by the main-loop refresh.
+        active_label: list[str] = [" thinking…"]
 
         def _on_message(msg: Any) -> None:
-            """Update spinner with active file on tool calls; capture assistant text.
-
-            For tool call messages, extracts the path argument and updates the
-            Live spinner label to show which file is being read or written.
-            For assistant messages, joins content parts and stores in captured.
-            """
-            if hasattr(msg, "tool_calls") and msg.tool_calls and live is not None:
+            """Update active_label with tool/file info; capture assistant text."""
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
-                        label = f" {tc.name} {path[-40:]}"
-                        rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
-                        if tip:
-                            rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
-                        live.update(RenderGroup(*rows))
+                        active_label[0] = f" {tc.name} {path[-40:]}"
             elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
@@ -425,36 +419,65 @@ class Agent:
                 else:
                     text = str(parts)
                 captured.append(text)
-
-        stats_capture: list[Any] = []
+                active_label[0] = " thinking…"
 
         def _on_prediction_completed(result: Any) -> None:
             """Capture per-round PredictionResult.stats for the post-response summary."""
             if hasattr(result, "stats"):
                 stats_capture.append(result.stats)
 
-        tok_count: list[int] = [0]
-
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens and update the Live spinner with tip if provided."""
+            """Count generated tokens; label is picked up by the main-loop refresh."""
             tok_count[0] += 1
+            active_label[0] = f" thinking…  {tok_count[0]} tok"
+
+        tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
+
+        # --- Background thread: runs model.act() with its own event loop so
+        #     synchronous tools do not stall the main asyncio event loop. -----
+        main_loop = asyncio.get_event_loop()
+        done_evt = asyncio.Event()
+        result_holder: list[Any] = [None]
+        error_holder: list[BaseException | None] = [None]
+
+        def _model_thread() -> None:
+            """Entry point for the model thread — owns a private asyncio event loop."""
+            thread_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(thread_loop)
+            try:
+                result_holder[0] = thread_loop.run_until_complete(
+                    model.act(
+                        chat,
+                        tools=tools,
+                        on_message=_on_message,
+                        on_prediction_completed=_on_prediction_completed,
+                        on_prediction_fragment=_on_fragment,
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error_holder[0] = exc
+            finally:
+                thread_loop.close()
+                main_loop.call_soon_threadsafe(done_evt.set)
+
+        thread = threading.Thread(target=_model_thread, daemon=True)
+        thread.start()
+
+        # Main loop: refresh the spinner every 100 ms regardless of model state.
+        while not done_evt.is_set():
             if live is not None:
-                rows: list[Any] = [
-                    Spinner(_SPINNER, text=f" thinking…  {tok_count[0]} tok", style=ACCENT)
-                ]
+                rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
                 if tip:
                     rows.append(Text(f"  {tip}", style=f"dim {ACCENT}"))
                 live.update(RenderGroup(*rows))
+            await asyncio.sleep(0.1)
 
-        tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
-        act_result = await model.act(
-            chat,
-            tools=tools,
-            on_message=_on_message,
-            on_prediction_completed=_on_prediction_completed,
-            on_prediction_fragment=_on_fragment,
-        )
+        thread.join()
 
+        if error_holder[0] is not None:
+            raise error_holder[0]
+
+        act_result = result_holder[0]
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         self._turn_count += 1
