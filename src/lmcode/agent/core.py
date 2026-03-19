@@ -12,11 +12,10 @@ from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.application import get_app
+from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
@@ -34,7 +33,7 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED, WARNING
+from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, BORDER, ERROR, SUCCESS, TEXT_MUTED, WARNING
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -555,7 +554,7 @@ class Agent:
         # Pair up user/assistant messages
         user_msgs = [m for role, m in self._raw_history if role == "user"]
         asst_msgs = [m for role, m in self._raw_history if role == "assistant"]
-        pairs = list(zip(user_msgs, asst_msgs))
+        pairs = list(zip(user_msgs, asst_msgs, strict=False))
         turns = pairs[-n:]
         start = max(1, len(pairs) - n + 1)
         console.print()
