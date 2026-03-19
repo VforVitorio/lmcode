@@ -258,10 +258,13 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        "completion-menu.completion": "fg:#a78bfa",
-        "completion-menu.completion.current": "bg:#a78bfa fg:#000000",
-        "completion-menu.meta.completion": "fg:#9ca3af",
-        "completion-menu.meta.completion.current": "bg:#a78bfa fg:#000000",
+        "completion-menu": "bg:#1e1b4b",
+        "completion-menu.completion": "fg:#9ca3af bg:#1e1b4b",
+        "completion-menu.completion.current": "fg:#c4b5fd bg:#2d2d3a bold",
+        "completion-menu.meta.completion": "fg:#4b5563 bg:#1e1b4b",
+        "completion-menu.meta.completion.current": "fg:#a78bfa bg:#2d2d3a",
+        "scrollbar.background": "bg:#1e1b4b",
+        "scrollbar.button": "bg:#a78bfa",
     }
 )
 
