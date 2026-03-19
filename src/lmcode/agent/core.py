@@ -260,15 +260,16 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        # bg matches terminal background — menu looks borderless / floating
+        # Borderless: bg matches terminal background so no visible box edges.
         "completion-menu": "bg:#121127",
-        "completion-menu.completion": "fg:#9ca3af bg:#121127",
-        "completion-menu.completion.current": "fg:#c4b5fd bg:#1e1b4b bold",
+        "completion-menu.completion": "fg:#6b7280 bg:#121127",
+        # Selected: very subtle dark bg + white text — no harsh colour block.
+        "completion-menu.completion.current": "fg:#f9fafb bg:#1c1a2e",
         "completion-menu.meta.completion": "bg:#121127",
-        "completion-menu.meta.completion.current": "bg:#1e1b4b",
+        "completion-menu.meta.completion.current": "bg:#1c1a2e",
         "scrollbar.background": "bg:#121127",
         "scrollbar.button": "bg:#2d2d3a",
-        # ghost-text inline suggestion colour (dim violet)
+        # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
         "auto-suggestion": "#4b4575",
     }
 )
