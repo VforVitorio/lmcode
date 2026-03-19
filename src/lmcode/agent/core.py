@@ -13,13 +13,11 @@ from typing import Any
 import lmstudio as lms
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
-from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.formatted_text import HTML, FormattedText
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.application import get_app
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.shortcuts.prompt import CompleteStyle
 from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
 from rich.console import Console
@@ -286,10 +284,6 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        # Transparent background — inherits terminal colour, no visible box.
-        "readline-like-completions": "bg:default",
-        "readline-like-completions.completion": "bg:default",
-        "readline-like-completions.completion.current": "bg:default underline",
         # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
         "auto-suggestion": "#4b4575",
     }
@@ -330,65 +324,36 @@ class _CombinedAutoSuggest(AutoSuggest):
         return self._hist.get_suggestion(buffer, document)
 
 
-class _SlashCompleter(Completer):
-    """Tab-triggered borderless dropdown with inline dim descriptions."""
+def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
+    """Create a PromptSession with Tab mode-cycling and ghost-text slash hints.
 
-    def get_completions(self, document: Any, complete_event: Any) -> Any:
-        """Yield completions for the current slash prefix."""
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        partial = text[1:]
-        for cmd, desc in _SLASH_COMMANDS:
-            cmd_name = cmd.split()[0]
-            if cmd_name[1:].startswith(partial):
-                yield Completion(
-                    cmd_name,
-                    start_position=-len(text),
-                    display=FormattedText(
-                        [
-                            ("fg:#a78bfa", f"{cmd_name:<16}"),
-                            ("fg:#4b4575", desc[:42]),
-                        ]
-                    ),
-                )
-
-
-def _make_session(
-    cycle_mode: Callable[[], None],
-    get_toolbar: Callable[[], Any] | None = None,
-) -> PromptSession:  # type: ignore[type-arg]
-    """Create a PromptSession with Tab mode-cycling, autocomplete, and toolbar.
-
-    - While typing / → ghost text shows first match; Tab opens readline list.
-    - Regular input → history ghost text (AutoSuggestFromHistory); Ctrl+R search.
-    - Without slash prefix, Tab cycles the permission mode in-place.
-    - get_toolbar is called each redraw to populate the bottom status bar.
+    - Regular input: Tab cycles permission mode (ask → auto → strict).
+    - Slash input: ghost text shows first matching command; Tab accepts it inline.
+    - Ctrl+R / Up-arrow: search persistent FileHistory across sessions.
     """
     _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     kb = KeyBindings()
 
-    _not_slash = Condition(lambda: not get_app().current_buffer.text.startswith("/"))
+    _is_slash = Condition(lambda: get_app().current_buffer.text.startswith("/"))
 
-    @kb.add("tab", eager=True, filter=_not_slash)
+    @kb.add("tab", eager=True, filter=~_is_slash)
     def _cycle(event: Any) -> None:
-        """Cycle mode on Tab when not typing a slash command.
-
-        For slash input, the filter is False so the default prompt_toolkit
-        Tab handler fires and opens the READLINE_LIKE completion list.
-        """
+        """Cycle permission mode when not in a slash command."""
         cycle_mode()
         event.app.invalidate()
+
+    @kb.add("tab", eager=True, filter=_is_slash)
+    def _accept_slash(event: Any) -> None:
+        """Accept ghost-text suggestion for the current slash command."""
+        buf = event.app.current_buffer
+        if buf.suggestion:
+            buf.insert_text(buf.suggestion.text)
 
     return PromptSession(
         key_bindings=kb,
         history=FileHistory(str(_HISTORY_PATH)),
-        completer=_SlashCompleter(),
         auto_suggest=_CombinedAutoSuggest(),
-        complete_while_typing=False,
-        complete_style=CompleteStyle.READLINE_LIKE,
         enable_history_search=True,
-        bottom_toolbar=get_toolbar,
         style=_COMPLETION_STYLE,
     )
 
