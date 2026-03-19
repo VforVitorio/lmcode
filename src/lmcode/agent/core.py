@@ -5,23 +5,28 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import pathlib
 import random
 from collections.abc import Callable
 from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.formatted_text import HTML, FormattedText
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts.prompt import CompleteStyle
 from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.syntax import Syntax
 from rich.text import Text
 
 from lmcode import __version__
@@ -106,6 +111,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tokens", "Show session-wide token usage totals"),
     ("/hide-model", "Toggle model name visibility in the prompt"),
     ("/tools", "List all available tools with their signatures"),
+    ("/history [N]", "Show last N conversation turns (default 5)"),
     ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
@@ -229,8 +235,26 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
-def _print_tool_result(name: str, result: str) -> None:
-    """Print a short preview of a tool result."""
+def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = None) -> None:
+    """Print a tool result — syntax-highlighted panel for read_file, one-liner otherwise."""
+    if name == "read_file" and args:
+        path = args.get("path", "")
+        if path and result and not result.startswith("error:"):
+            lines = result.splitlines()
+            n = min(len(lines), 20)
+            preview = "\n".join(lines[:n])
+            suffix = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            syn = Syntax(
+                preview + suffix,
+                ext or "text",
+                theme="monokai",
+                line_numbers=True,
+            )
+            short = pathlib.Path(path).name
+            title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
+            console.print(_Panel(syn, title=title, border_style=BORDER, padding=(0, 1)))
+            return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
     console.print(f"  [{SUCCESS}]✓  {name}[/] [{TEXT_MUTED}]{preview}{suffix}[/]")
@@ -247,7 +271,7 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     def _wrapper(*args: Any, **kwargs: Any) -> str:
         _print_tool_call(fn.__name__, kwargs)
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result))
+        _print_tool_result(fn.__name__, str(result), kwargs)
         return result
 
     return _wrapper
@@ -260,15 +284,9 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        # Borderless: bg matches terminal background so no visible box edges.
-        "completion-menu": "bg:#121127",
-        "completion-menu.completion": "fg:#6b7280 bg:#121127",
-        # Selected: very subtle dark bg + white text — no harsh colour block.
-        "completion-menu.completion.current": "fg:#f9fafb bg:#1c1a2e",
-        "completion-menu.meta.completion": "bg:#121127",
-        "completion-menu.meta.completion.current": "bg:#1c1a2e",
-        "scrollbar.background": "bg:#121127",
-        "scrollbar.button": "bg:#2d2d3a",
+        # Readline-like completions printed below the prompt line.
+        "readline-like-completions": "bg:#121127",
+        "readline-like-completions.completion": "bg:#121127",
         # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
         "auto-suggestion": "#4b4575",
     }
@@ -293,6 +311,22 @@ class _SlashAutoSuggest(AutoSuggest):
         return None
 
 
+_HISTORY_PATH = pathlib.Path.home() / ".lmcode" / "history"
+
+
+class _CombinedAutoSuggest(AutoSuggest):
+    """Ghost text: slash suggestions for / input, history for everything else."""
+
+    _slash: AutoSuggest = _SlashAutoSuggest()
+    _hist: AutoSuggest = AutoSuggestFromHistory()
+
+    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
+        """Delegate to slash or history suggester based on input prefix."""
+        if document.text.startswith("/"):
+            return self._slash.get_suggestion(buffer, document)
+        return self._hist.get_suggestion(buffer, document)
+
+
 class _SlashCompleter(Completer):
     """Tab-triggered borderless dropdown with inline dim descriptions."""
 
@@ -310,37 +344,46 @@ class _SlashCompleter(Completer):
                     start_position=-len(text),
                     display=FormattedText(
                         [
-                            ("", f"{cmd_name:<16}"),
-                            ("fg:#4b4575", desc[:40]),
+                            ("fg:#a78bfa", f"{cmd_name:<16}"),
+                            ("fg:#4b4575", desc[:42]),
                         ]
                     ),
                 )
 
 
-def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
-    """Create a PromptSession with Tab mode-cycling and slash autocomplete.
+def _make_session(
+    cycle_mode: Callable[[], None],
+    get_toolbar: Callable[[], Any] | None = None,
+) -> PromptSession:  # type: ignore[type-arg]
+    """Create a PromptSession with Tab mode-cycling, autocomplete, and toolbar.
 
-    While typing / the ghost-text auto-suggester shows the first match inline.
-    Tab explicitly opens the borderless dropdown for disambiguation.
-    Without a slash prefix, Tab cycles the permission mode in-place.
+    - While typing / → ghost text shows first match; Tab opens readline list.
+    - Regular input → history ghost text (AutoSuggestFromHistory); Ctrl+R search.
+    - Without slash prefix, Tab cycles the permission mode in-place.
+    - get_toolbar is called each redraw to populate the bottom status bar.
     """
+    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     kb = KeyBindings()
 
-    @kb.add("tab")
+    @kb.add("tab", eager=True)
     def _cycle(event: Any) -> None:
-        """Cycle mode on Tab; open completer when buffer starts with /."""
+        """Cycle mode on Tab unless input starts with / — then show completions."""
         buf = event.app.current_buffer
         if not buf.text.startswith("/"):
             cycle_mode()
             event.app.invalidate()
         else:
-            buf.start_completion(select_first=True)
+            buf.start_completion(select_first=False)
 
     return PromptSession(
         key_bindings=kb,
+        history=FileHistory(str(_HISTORY_PATH)),
         completer=_SlashCompleter(),
-        auto_suggest=_SlashAutoSuggest(),
+        auto_suggest=_CombinedAutoSuggest(),
         complete_while_typing=False,
+        complete_style=CompleteStyle.READLINE_LIKE,
+        enable_history_search=True,
+        bottom_toolbar=get_toolbar,
         style=_COMPLETION_STYLE,
     )
 
@@ -519,12 +562,52 @@ class Agent:
             console.print()
             return True
 
+        if cmd == "/history":
+            try:
+                n = int(parts[1]) if len(parts) > 1 else 5
+            except ValueError:
+                n = 5
+            self._print_history(n)
+            return True
+
         if cmd == "/version":
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
 
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
+
+    def _print_history(self, n: int = 5) -> None:
+        """Render the last N conversation turns as styled Rich panels."""
+        if not self._raw_history:
+            console.print(f"[{TEXT_MUTED}]no history yet[/]\n")
+            return
+        # Pair up user/assistant messages
+        user_msgs = [m for role, m in self._raw_history if role == "user"]
+        asst_msgs = [m for role, m in self._raw_history if role == "assistant"]
+        pairs = list(zip(user_msgs, asst_msgs))
+        turns = pairs[-n:]
+        start = max(1, len(pairs) - n + 1)
+        console.print()
+        for i, (user_msg, asst_msg) in enumerate(turns):
+            turn = start + i
+            console.print(
+                _Panel(
+                    f"[{TEXT_MUTED}]{user_msg}[/]",
+                    title=f"[{ACCENT}]turn {turn}  ·  you[/]",
+                    border_style=BORDER,
+                    padding=(0, 1),
+                )
+            )
+            console.print(
+                _Panel(
+                    asst_msg,
+                    title=f"[{ACCENT_BRIGHT}]turn {turn}  ·  lmcode[/]",
+                    border_style=f"dim {ACCENT}",
+                    padding=(0, 1),
+                )
+            )
+        console.print()
 
     async def _do_compact(self) -> None:
         """Summarise the conversation history and replace it with the summary."""
@@ -720,7 +803,22 @@ class Agent:
             """Advance to the next mode in-place (prompt redraws via invalidate)."""
             self._mode = next_mode(self._mode)
 
-        session = _make_session(cycle_mode=_cycle_mode)
+        def _toolbar() -> HTML:
+            """Render the persistent bottom toolbar with mode, turn, and token info."""
+            ctx = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
+            ctx_part = f'<style fg="#4b4575">  ·  {ctx}</style>' if ctx else ""
+            tok = self._session_prompt_tokens + self._session_completion_tokens
+            tok_str = f"{tok / 1000:.1f}k" if tok >= 1000 else str(tok)
+            return HTML(
+                f' <style fg="#4b4575">{self._mode}</style>'
+                f'<style fg="#2d2d3a">  ·  </style>'
+                f'<style fg="#4b4575">turn {self._turn_count}</style>'
+                f"{ctx_part}"
+                f'<style fg="#2d2d3a">  ·  </style>'
+                f'<style fg="#4b4575">↑↓ {tok_str} tok</style> '
+            )
+
+        session = _make_session(cycle_mode=_cycle_mode, get_toolbar=_toolbar)
 
         try:
             async with lms.AsyncClient() as client:
