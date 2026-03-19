@@ -72,6 +72,21 @@ user input
               → stream to terminal
 ```
 
+## Spinner keepalive pattern
+
+During model prefill the Python process is blocked inside the LM Studio SDK call, which prevents the Rich `Live` display from refreshing. To keep the spinner label visually active, `_run_turn` launches a short-lived `asyncio.create_task` keepalive coroutine before handing control to the model:
+
+```
+_run_turn()
+  ├── asyncio.create_task(_keepalive(live))   # polls every 100 ms, updates spinner label
+  ├── run model.act() in background thread    # blocks on GPU/prefill
+  └── task.cancel() once model returns        # stops keepalive when response arrives
+```
+
+The keepalive task owns **no shared state** — it only calls `live.update()` with a new label string derived from elapsed time. The main coroutine remains the single owner of the `Live` context; the task merely triggers redraws.
+
+This avoids the display freeze that occurs when the event loop is starved during long prefill windows (issue #39).
+
 ## Multi-agent pattern
 
 For complex tasks, an **Orchestrator** agent spawns **Worker** agents via `asyncio.gather`. Workers don't share state — they communicate only through their return values. LM Studio serializes GPU access at the server level, so workers run concurrently at the CPU/IO level but queue at the GPU.
