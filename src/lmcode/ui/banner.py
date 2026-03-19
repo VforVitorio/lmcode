@@ -166,9 +166,11 @@ def print_banner(
     # on Windows terminals that default to cp1252.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    console = Console(legacy_windows=False)
     width = shutil.get_terminal_size((100, 24)).columns
-    if width >= 90:
+    # The ASCII art block is ~60 chars; Panel border + padding adds ~8.
+    # Full banner needs at least 70 columns; below that use the compact form.
+    console = Console(legacy_windows=False, width=min(width, 100))
+    if width >= 70:
         console.print(get_banner(version, model, lmstudio_connected))
     else:
         _print_compact_banner(console, version, model, lmstudio_connected)

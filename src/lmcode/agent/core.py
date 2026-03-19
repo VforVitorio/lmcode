@@ -5,19 +5,27 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import pathlib
 import random
 from collections.abc import Callable
 from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import get_app
+from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.syntax import Syntax
 from rich.text import Text
 
 from lmcode import __version__
@@ -25,7 +33,7 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, ERROR, SUCCESS, TEXT_MUTED, WARNING
+from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, BORDER, ERROR, SUCCESS, TEXT_MUTED, WARNING
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -54,7 +62,10 @@ def _rewrite_as_history(text: str) -> None:
 
 
 # Spinner style used for the thinking indicator.  Configurable via UISettings.
-_SPINNER = "dots"
+_SPINNER = "circleHalves"
+
+# Animated dot suffixes cycled in the keepalive task (every 3 ticks ≈ 0.3 s).
+_DOTS = (".", "..", "...")
 
 # Rotating tips shown below the spinner during model inference.
 _TIPS: list[str] = [
@@ -99,6 +110,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tokens", "Show session-wide token usage totals"),
     ("/hide-model", "Toggle model name visibility in the prompt"),
     ("/tools", "List all available tools with their signatures"),
+    ("/history [N]", "Show last N conversation turns (default 5)"),
     ("/status", "Show current session state"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
@@ -222,8 +234,26 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
-def _print_tool_result(name: str, result: str) -> None:
-    """Print a short preview of a tool result."""
+def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = None) -> None:
+    """Print a tool result — syntax-highlighted panel for read_file, one-liner otherwise."""
+    if name == "read_file" and args:
+        path = args.get("path", "")
+        if path and result and not result.startswith("error:"):
+            lines = result.splitlines()
+            n = min(len(lines), 20)
+            preview = "\n".join(lines[:n])
+            suffix = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            syn = Syntax(
+                preview + suffix,
+                ext or "text",
+                theme="monokai",
+                line_numbers=True,
+            )
+            short = pathlib.Path(path).name
+            title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
+            console.print(_Panel(syn, title=title, border_style=BORDER, padding=(0, 1)))
+            return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
     console.print(f"  [{SUCCESS}]✓  {name}[/] [{TEXT_MUTED}]{preview}{suffix}[/]")
@@ -240,7 +270,7 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     def _wrapper(*args: Any, **kwargs: Any) -> str:
         _print_tool_call(fn.__name__, kwargs)
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result))
+        _print_tool_result(fn.__name__, str(result), kwargs)
         return result
 
     return _wrapper
@@ -251,22 +281,80 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 # ---------------------------------------------------------------------------
 
 
-def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
-    """Create a PromptSession with in-place Tab mode-cycling.
+_COMPLETION_STYLE = PTStyle.from_dict(
+    {
+        # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
+        "auto-suggestion": "#4b4575",
+    }
+)
 
-    cycle_mode is called on Tab; the prompt redraws in-place via invalidate()
-    without creating a new line. The dynamic prompt lambda is passed to each
-    prompt_async() call so it reflects the updated mode immediately.
+
+class _SlashAutoSuggest(AutoSuggest):
+    """Fish-shell-style ghost text: first match appears dim after the cursor.
+
+    Right-arrow or Ctrl-E accepts the full suggestion.
     """
+
+    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
+        """Return the suffix of the first matching slash command."""
+        text = document.text
+        if not text.startswith("/"):
+            return None
+        for cmd, _desc in _SLASH_COMMANDS:
+            cmd_name = cmd.split()[0]
+            if cmd_name.startswith(text) and cmd_name != text:
+                return Suggestion(cmd_name[len(text) :])
+        return None
+
+
+_HISTORY_PATH = pathlib.Path.home() / ".lmcode" / "history"
+
+
+class _CombinedAutoSuggest(AutoSuggest):
+    """Ghost text: slash suggestions for / input, history for everything else."""
+
+    _slash: AutoSuggest = _SlashAutoSuggest()
+    _hist: AutoSuggest = AutoSuggestFromHistory()
+
+    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
+        """Delegate to slash or history suggester based on input prefix."""
+        if document.text.startswith("/"):
+            return self._slash.get_suggestion(buffer, document)
+        return self._hist.get_suggestion(buffer, document)
+
+
+def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
+    """Create a PromptSession with Tab mode-cycling and ghost-text slash hints.
+
+    - Regular input: Tab cycles permission mode (ask → auto → strict).
+    - Slash input: ghost text shows first matching command; Tab accepts it inline.
+    - Ctrl+R / Up-arrow: search persistent FileHistory across sessions.
+    """
+    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     kb = KeyBindings()
 
-    @kb.add("tab")
+    _is_slash = Condition(lambda: get_app().current_buffer.text.startswith("/"))
+
+    @kb.add("tab", eager=True, filter=~_is_slash)
     def _cycle(event: Any) -> None:
-        """Cycle mode and redraw the prompt without starting a new line."""
+        """Cycle permission mode when not in a slash command."""
         cycle_mode()
         event.app.invalidate()
 
-    return PromptSession(key_bindings=kb)
+    @kb.add("tab", eager=True, filter=_is_slash)
+    def _accept_slash(event: Any) -> None:
+        """Accept ghost-text suggestion for the current slash command."""
+        buf = event.app.current_buffer
+        if buf.suggestion:
+            buf.insert_text(buf.suggestion.text)
+
+    return PromptSession(
+        key_bindings=kb,
+        history=FileHistory(str(_HISTORY_PATH)),
+        auto_suggest=_CombinedAutoSuggest(),
+        enable_history_search=True,
+        style=_COMPLETION_STYLE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -443,12 +531,52 @@ class Agent:
             console.print()
             return True
 
+        if cmd == "/history":
+            try:
+                n = int(parts[1]) if len(parts) > 1 else 5
+            except ValueError:
+                n = 5
+            self._print_history(n)
+            return True
+
         if cmd == "/version":
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
 
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
+
+    def _print_history(self, n: int = 5) -> None:
+        """Render the last N conversation turns as styled Rich panels."""
+        if not self._raw_history:
+            console.print(f"[{TEXT_MUTED}]no history yet[/]\n")
+            return
+        # Pair up user/assistant messages
+        user_msgs = [m for role, m in self._raw_history if role == "user"]
+        asst_msgs = [m for role, m in self._raw_history if role == "assistant"]
+        pairs = list(zip(user_msgs, asst_msgs, strict=False))
+        turns = pairs[-n:]
+        start = max(1, len(pairs) - n + 1)
+        console.print()
+        for i, (user_msg, asst_msg) in enumerate(turns):
+            turn = start + i
+            console.print(
+                _Panel(
+                    f"[{TEXT_MUTED}]{user_msg}[/]",
+                    title=f"[{ACCENT}]turn {turn}  ·  you[/]",
+                    border_style=BORDER,
+                    padding=(0, 1),
+                )
+            )
+            console.print(
+                _Panel(
+                    asst_msg,
+                    title=f"[{ACCENT_BRIGHT}]turn {turn}  ·  lmcode[/]",
+                    border_style=f"dim {ACCENT}",
+                    padding=(0, 1),
+                )
+            )
+        console.print()
 
     async def _do_compact(self) -> None:
         """Summarise the conversation history and replace it with the summary."""
@@ -525,20 +653,27 @@ class Agent:
         chat.add_user_message(user_input)
 
         captured: list[str] = []
-        active_label: list[str] = [" thinking…"]
+        # Base label without animated dots suffix.  Keepalive appends _DOTS.
+        # Standard values: "thinking" | "working" | "finishing" | "tool /path"
+        active_base: list[str] = ["thinking"]
 
         def _on_message(msg: Any) -> None:
-            """Update active_label with active file on tool calls; capture assistant text.
+            """Drive the spinner state machine and capture assistant text.
 
-            For tool call messages, extracts the path argument and sets the
-            active_label so the keepalive task reflects the active file in the spinner.
-            For assistant messages, joins content parts and stores in captured.
+            State transitions:
+              tool_calls present  → "working" (or "tool /path" for file tools)
+              role == "tool"      → "finishing" (tool result in, model writing)
+              assistant content   → captured for display
             """
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
-                        active_label[0] = f" {tc.name} {path[-40:]}"
+                        active_base[0] = f"{tc.name} {path[-30:]}"
+                    else:
+                        active_base[0] = "working"
+            elif getattr(msg, "role", None) == "tool":
+                active_base[0] = "finishing"
             elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
@@ -557,9 +692,8 @@ class Agent:
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens and update active_label with tok count."""
+            """Count generated tokens; label update is handled by the keepalive."""
             tok_count[0] += 1
-            active_label[0] = f" thinking…  {tok_count[0]} tok"
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
 
@@ -571,14 +705,28 @@ class Agent:
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
 
         async def _keepalive() -> None:
-            """Update spinner label every 100 ms; rotate tips every 8 s."""
+            """Update spinner label every 100 ms; animate dots; rotate tips every 8 s."""
             tip_idx = 0
+            dot_idx = 0
             tick = 0
             while not stop_evt.is_set():
                 if live is not None:
                     if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
                         tip_idx = (tip_idx + 1) % len(shuffled_tips)
-                    rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
+                    if tick % 3 == 0:
+                        dot_idx = (dot_idx + 1) % len(_DOTS)
+                    base = active_base[0]
+                    is_word = base in ("thinking", "working", "finishing")
+                    if is_word:
+                        dots = _DOTS[dot_idx]
+                        tok = tok_count[0]
+                        if base == "thinking" and tok > 0:
+                            label = f" {base}{dots}  {tok} tok"
+                        else:
+                            label = f" {base}{dots}"
+                    else:
+                        label = f" {base}"
+                    rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
                     if shuffled_tips:
                         rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
                     live.update(RenderGroup(*rows))
@@ -670,7 +818,7 @@ class Agent:
                         continue
 
                     initial: Any = RenderGroup(
-                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
+                        Spinner(_SPINNER, text=" thinking.", style=ACCENT),
                     )
                     self._raw_history.append(("user", stripped))
                     with Live(
