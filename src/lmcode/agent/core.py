@@ -16,6 +16,8 @@ from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Sug
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.application import get_app
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts.prompt import CompleteStyle
 from prompt_toolkit.styles import Style as PTStyle
@@ -284,6 +286,10 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
+        # Transparent background — inherits terminal colour, no visible box.
+        "readline-like-completions": "bg:default",
+        "readline-like-completions.completion": "bg:default",
+        "readline-like-completions.completion.current": "bg:default underline",
         # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
         "auto-suggestion": "#4b4575",
     }
@@ -362,15 +368,17 @@ def _make_session(
     _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     kb = KeyBindings()
 
-    @kb.add("tab", eager=True)
+    _not_slash = Condition(lambda: not get_app().current_buffer.text.startswith("/"))
+
+    @kb.add("tab", eager=True, filter=_not_slash)
     def _cycle(event: Any) -> None:
-        """Cycle mode on Tab unless input starts with / — then show completions."""
-        buf = event.app.current_buffer
-        if not buf.text.startswith("/"):
-            cycle_mode()
-            event.app.invalidate()
-        else:
-            buf.start_completion(select_first=False)
+        """Cycle mode on Tab when not typing a slash command.
+
+        For slash input, the filter is False so the default prompt_toolkit
+        Tab handler fires and opens the READLINE_LIKE completion list.
+        """
+        cycle_mode()
+        event.app.invalidate()
 
     return PromptSession(
         key_bindings=kb,
