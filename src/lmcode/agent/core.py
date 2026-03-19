@@ -11,7 +11,9 @@ from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
@@ -54,7 +56,10 @@ def _rewrite_as_history(text: str) -> None:
 
 
 # Spinner style used for the thinking indicator.  Configurable via UISettings.
-_SPINNER = "dots"
+_SPINNER = "circleHalves"
+
+# Animated dot suffixes cycled in the keepalive task (every 3 ticks ≈ 0.3 s).
+_DOTS = (".", "..", "...")
 
 # Rotating tips shown below the spinner during model inference.
 _TIPS: list[str] = [
@@ -251,22 +256,61 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 # ---------------------------------------------------------------------------
 
 
-def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
-    """Create a PromptSession with in-place Tab mode-cycling.
+_COMPLETION_STYLE = PTStyle.from_dict(
+    {
+        "completion-menu.completion": "fg:#a78bfa",
+        "completion-menu.completion.current": "bg:#a78bfa fg:#000000",
+        "completion-menu.meta.completion": "fg:#9ca3af",
+        "completion-menu.meta.completion.current": "bg:#a78bfa fg:#000000",
+    }
+)
 
-    cycle_mode is called on Tab; the prompt redraws in-place via invalidate()
-    without creating a new line. The dynamic prompt lambda is passed to each
-    prompt_async() call so it reflects the updated mode immediately.
+
+class _SlashCompleter(Completer):
+    """Autocomplete for slash commands — activates after the user types /."""
+
+    def get_completions(self, document: Any, complete_event: Any) -> Any:
+        """Yield completions for the current slash prefix."""
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        partial = text[1:]
+        for cmd, desc in _SLASH_COMMANDS:
+            cmd_name = cmd.split()[0]
+            if cmd_name[1:].startswith(partial):
+                yield Completion(
+                    cmd_name,
+                    start_position=-len(text),
+                    display=cmd_name,
+                    display_meta=desc,
+                )
+
+
+def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
+    """Create a PromptSession with Tab mode-cycling and slash autocomplete.
+
+    cycle_mode is called on Tab when the input is empty or non-slash; the
+    prompt redraws in-place via invalidate(). When input starts with /, Tab
+    triggers the slash completer instead.
     """
     kb = KeyBindings()
 
     @kb.add("tab")
     def _cycle(event: Any) -> None:
-        """Cycle mode and redraw the prompt without starting a new line."""
-        cycle_mode()
-        event.app.invalidate()
+        """Cycle mode on Tab unless the buffer starts with / (autocomplete)."""
+        buf = event.app.current_buffer
+        if not buf.text.startswith("/"):
+            cycle_mode()
+            event.app.invalidate()
+        else:
+            buf.start_completion(select_first=True)
 
-    return PromptSession(key_bindings=kb)
+    return PromptSession(
+        key_bindings=kb,
+        completer=_SlashCompleter(),
+        complete_while_typing=False,
+        style=_COMPLETION_STYLE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -525,20 +569,27 @@ class Agent:
         chat.add_user_message(user_input)
 
         captured: list[str] = []
-        active_label: list[str] = [" thinking…"]
+        # Base label without animated dots suffix.  Keepalive appends _DOTS.
+        # Standard values: "thinking" | "working" | "finishing" | "tool /path"
+        active_base: list[str] = ["thinking"]
 
         def _on_message(msg: Any) -> None:
-            """Update active_label with active file on tool calls; capture assistant text.
+            """Drive the spinner state machine and capture assistant text.
 
-            For tool call messages, extracts the path argument and sets the
-            active_label so the keepalive task reflects the active file in the spinner.
-            For assistant messages, joins content parts and stores in captured.
+            State transitions:
+              tool_calls present  → "working" (or "tool /path" for file tools)
+              role == "tool"      → "finishing" (tool result in, model writing)
+              assistant content   → captured for display
             """
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
-                        active_label[0] = f" {tc.name} {path[-40:]}"
+                        active_base[0] = f"{tc.name} {path[-30:]}"
+                    else:
+                        active_base[0] = "working"
+            elif getattr(msg, "role", None) == "tool":
+                active_base[0] = "finishing"
             elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
                 if isinstance(parts, list):
@@ -557,9 +608,8 @@ class Agent:
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens and update active_label with tok count."""
+            """Count generated tokens; label update is handled by the keepalive."""
             tok_count[0] += 1
-            active_label[0] = f" thinking…  {tok_count[0]} tok"
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
 
@@ -571,14 +621,28 @@ class Agent:
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
 
         async def _keepalive() -> None:
-            """Update spinner label every 100 ms; rotate tips every 8 s."""
+            """Update spinner label every 100 ms; animate dots; rotate tips every 8 s."""
             tip_idx = 0
+            dot_idx = 0
             tick = 0
             while not stop_evt.is_set():
                 if live is not None:
                     if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
                         tip_idx = (tip_idx + 1) % len(shuffled_tips)
-                    rows: list[Any] = [Spinner(_SPINNER, text=active_label[0], style=ACCENT)]
+                    if tick % 3 == 0:
+                        dot_idx = (dot_idx + 1) % len(_DOTS)
+                    base = active_base[0]
+                    is_word = base in ("thinking", "working", "finishing")
+                    if is_word:
+                        dots = _DOTS[dot_idx]
+                        tok = tok_count[0]
+                        if base == "thinking" and tok > 0:
+                            label = f" {base}{dots}  {tok} tok"
+                        else:
+                            label = f" {base}{dots}"
+                    else:
+                        label = f" {base}"
+                    rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
                     if shuffled_tips:
                         rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
                     live.update(RenderGroup(*rows))
@@ -670,7 +734,7 @@ class Agent:
                         continue
 
                     initial: Any = RenderGroup(
-                        Spinner(_SPINNER, text=" thinking…", style=ACCENT),
+                        Spinner(_SPINNER, text=" thinking.", style=ACCENT),
                     )
                     self._raw_history.append(("user", stripped))
                     with Live(
