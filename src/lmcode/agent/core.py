@@ -11,7 +11,9 @@ from typing import Any
 
 import lmstudio as lms
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
 from rich.align import Align
@@ -258,19 +260,40 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        "completion-menu": "bg:#1e1b4b",
-        "completion-menu.completion": "fg:#9ca3af bg:#1e1b4b",
-        "completion-menu.completion.current": "fg:#c4b5fd bg:#2d2d3a bold",
-        "completion-menu.meta.completion": "fg:#4b5563 bg:#1e1b4b",
-        "completion-menu.meta.completion.current": "fg:#a78bfa bg:#2d2d3a",
-        "scrollbar.background": "bg:#1e1b4b",
-        "scrollbar.button": "bg:#a78bfa",
+        # bg matches terminal background — menu looks borderless / floating
+        "completion-menu": "bg:#121127",
+        "completion-menu.completion": "fg:#9ca3af bg:#121127",
+        "completion-menu.completion.current": "fg:#c4b5fd bg:#1e1b4b bold",
+        "completion-menu.meta.completion": "bg:#121127",
+        "completion-menu.meta.completion.current": "bg:#1e1b4b",
+        "scrollbar.background": "bg:#121127",
+        "scrollbar.button": "bg:#2d2d3a",
+        # ghost-text inline suggestion colour (dim violet)
+        "auto-suggestion": "#4b4575",
     }
 )
 
 
+class _SlashAutoSuggest(AutoSuggest):
+    """Fish-shell-style ghost text: first match appears dim after the cursor.
+
+    Right-arrow or Ctrl-E accepts the full suggestion.
+    """
+
+    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
+        """Return the suffix of the first matching slash command."""
+        text = document.text
+        if not text.startswith("/"):
+            return None
+        for cmd, _desc in _SLASH_COMMANDS:
+            cmd_name = cmd.split()[0]
+            if cmd_name.startswith(text) and cmd_name != text:
+                return Suggestion(cmd_name[len(text) :])
+        return None
+
+
 class _SlashCompleter(Completer):
-    """Autocomplete for slash commands — activates after the user types /."""
+    """Tab-triggered borderless dropdown with inline dim descriptions."""
 
     def get_completions(self, document: Any, complete_event: Any) -> Any:
         """Yield completions for the current slash prefix."""
@@ -284,23 +307,27 @@ class _SlashCompleter(Completer):
                 yield Completion(
                     cmd_name,
                     start_position=-len(text),
-                    display=cmd_name,
-                    display_meta=desc,
+                    display=FormattedText(
+                        [
+                            ("", f"{cmd_name:<16}"),
+                            ("fg:#4b4575", desc[:40]),
+                        ]
+                    ),
                 )
 
 
 def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
     """Create a PromptSession with Tab mode-cycling and slash autocomplete.
 
-    cycle_mode is called on Tab when the input is empty or non-slash; the
-    prompt redraws in-place via invalidate(). When input starts with /, Tab
-    triggers the slash completer instead.
+    While typing / the ghost-text auto-suggester shows the first match inline.
+    Tab explicitly opens the borderless dropdown for disambiguation.
+    Without a slash prefix, Tab cycles the permission mode in-place.
     """
     kb = KeyBindings()
 
     @kb.add("tab")
     def _cycle(event: Any) -> None:
-        """Cycle mode on Tab unless the buffer starts with / (autocomplete)."""
+        """Cycle mode on Tab; open completer when buffer starts with /."""
         buf = event.app.current_buffer
         if not buf.text.startswith("/"):
             cycle_mode()
@@ -311,6 +338,7 @@ def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ign
     return PromptSession(
         key_bindings=kb,
         completer=_SlashCompleter(),
+        auto_suggest=_SlashAutoSuggest(),
         complete_while_typing=False,
         style=_COMPLETION_STYLE,
     )
