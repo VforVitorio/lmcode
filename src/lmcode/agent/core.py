@@ -284,9 +284,6 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 _COMPLETION_STYLE = PTStyle.from_dict(
     {
-        # Readline-like completions printed below the prompt line.
-        "readline-like-completions": "bg:#121127",
-        "readline-like-completions.completion": "bg:#121127",
         # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
         "auto-suggestion": "#4b4575",
     }
@@ -803,22 +800,7 @@ class Agent:
             """Advance to the next mode in-place (prompt redraws via invalidate)."""
             self._mode = next_mode(self._mode)
 
-        def _toolbar() -> HTML:
-            """Render the persistent bottom toolbar with mode, turn, and token info."""
-            ctx = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
-            ctx_part = f'<style fg="#4b4575">  ·  {ctx}</style>' if ctx else ""
-            tok = self._session_prompt_tokens + self._session_completion_tokens
-            tok_str = f"{tok / 1000:.1f}k" if tok >= 1000 else str(tok)
-            return HTML(
-                f' <style fg="#4b4575">{self._mode}</style>'
-                f'<style fg="#2d2d3a">  ·  </style>'
-                f'<style fg="#4b4575">turn {self._turn_count}</style>'
-                f"{ctx_part}"
-                f'<style fg="#2d2d3a">  ·  </style>'
-                f'<style fg="#4b4575">↑↓ {tok_str} tok</style> '
-            )
-
-        session = _make_session(cycle_mode=_cycle_mode, get_toolbar=_toolbar)
+        session = _make_session(cycle_mode=_cycle_mode)
 
         try:
             async with lms.AsyncClient() as client:
