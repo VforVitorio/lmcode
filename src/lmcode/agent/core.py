@@ -23,10 +23,12 @@ from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.markup import escape as _escape
 from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 from lmcode import __version__
@@ -34,7 +36,16 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, BORDER, ERROR, SUCCESS, TEXT_MUTED, WARNING
+from lmcode.ui.colors import (
+    ACCENT,
+    ACCENT_BRIGHT,
+    BORDER,
+    ERROR,
+    SUCCESS,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WARNING,
+)
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -256,6 +267,20 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             console.print(
                 _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
             )
+            return
+    if name == "run_shell" and args:
+        cmd = args.get("command", "")
+        if cmd:
+            lines = result.splitlines()
+            n = min(len(lines), 30)
+            out_text = "\n".join(lines[:n])
+            more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
+            grid.add_column(style=TEXT_SECONDARY)
+            grid.add_row("in", _escape(cmd))
+            grid.add_row(Text("out", style=TEXT_MUTED), Text(out_text + more, style=TEXT_MUTED))
+            console.print(_Panel(grid, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1)))
             return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
