@@ -275,12 +275,16 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             n = min(len(lines), 30)
             out_text = "\n".join(lines[:n])
             more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
-            grid = Table.grid(padding=(0, 1))
-            grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
-            grid.add_column(style=TEXT_SECONDARY)
-            grid.add_row("in", _escape(cmd))
-            grid.add_row(Text("out", style=TEXT_MUTED), Text(out_text + more, style=TEXT_MUTED))
-            console.print(_Panel(grid, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1)))
+            in_grid = Table.grid(padding=(0, 1))
+            in_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
+            in_grid.add_column(style=TEXT_SECONDARY)
+            in_grid.add_row("IN", _escape(cmd))
+            out_grid = Table.grid(padding=(0, 1))
+            out_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
+            out_grid.add_column(style=TEXT_MUTED)
+            out_grid.add_row("OUT", _escape(out_text + more))
+            content = RenderGroup(in_grid, Rule(style=f"dim {ACCENT}"), out_grid)
+            console.print(_Panel(content, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1)))
             return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
