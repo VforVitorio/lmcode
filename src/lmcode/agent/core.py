@@ -18,6 +18,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
+from rich import box
 from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
@@ -247,12 +248,14 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             syn = Syntax(
                 preview + suffix,
                 ext or "text",
-                theme="monokai",
+                theme="one-dark",
                 line_numbers=True,
             )
             short = pathlib.Path(path).name
             title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
-            console.print(_Panel(syn, title=title, border_style=BORDER, padding=(0, 1)))
+            console.print(
+                _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+            )
             return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
