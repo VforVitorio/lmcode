@@ -247,6 +247,73 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
+def _render_diff_sidebyside(
+    old_lines: list[str], new_lines: list[str], max_rows: int = 50
+) -> tuple[Table, int, int]:
+    """Build a side-by-side diff table (old | new) and return (table, n_added, n_removed)."""
+    # Diff palette — synthesised from Claude Code/Codex source + GitHub Primer research.
+    # Backgrounds: Codex-style warm tints (confirmed closest to Claude Code post-v2.0.70).
+    # Foreground: Catppuccin palette — softer than ODP, less harsh than pure red/green.
+    # Equal bg: subtle violet-tinted neutral to keep the panel cohesive.
+    _EQ_BG = "#1c1a2e"    # unchanged lines — violet-tinted neutral
+    _DEL_FG = "#f38ba8"   # Catppuccin Mocha rose — warm, not harsh
+    _DEL_BG = "#4a221d"   # Codex dark-TC del bg — warm maroon (Claude Code style)
+    _ADD_FG = "#a6e3a1"   # Catppuccin Mocha green — soft, clearly "added"
+    _ADD_BG = "#1e3a2a"   # Codex dark-TC add bg — deep forest green
+    _SEP = Text("│", style=f"dim {ACCENT}")
+
+    table = Table(box=None, padding=(0, 1), show_header=False, expand=True)
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+    table.add_column(width=1, no_wrap=True)  # separator
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+
+    added = removed = rows = 0
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+
+    def _row(left: Text, right: Text) -> None:
+        table.add_row(left, _SEP, right)
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if rows >= max_rows:
+            break
+        if op == "equal":
+            for old, new in zip(old_lines[i1:i2], new_lines[j1:j2], strict=False):
+                _row(
+                    Text(old.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                    Text(new.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                )
+                rows += 1
+        elif op == "replace":
+            old_chunk = old_lines[i1:i2]
+            new_chunk = new_lines[j1:j2]
+            for i in range(max(len(old_chunk), len(new_chunk))):
+                _row(
+                    Text(
+                        old_chunk[i].rstrip("\n") if i < len(old_chunk) else "",
+                        style=f"{_DEL_FG} on {_DEL_BG}",
+                    ),
+                    Text(
+                        new_chunk[i].rstrip("\n") if i < len(new_chunk) else "",
+                        style=f"{_ADD_FG} on {_ADD_BG}",
+                    ),
+                )
+                rows += 1
+            removed += i2 - i1
+            added += j2 - j1
+        elif op == "delete":
+            for line in old_lines[i1:i2]:
+                _row(Text(line.rstrip("\n"), style=f"{_DEL_FG} on {_DEL_BG}"), Text(""))
+                rows += 1
+            removed += i2 - i1
+        elif op == "insert":
+            for line in new_lines[j1:j2]:
+                _row(Text(""), Text(line.rstrip("\n"), style=f"{_ADD_FG} on {_ADD_BG}"))
+                rows += 1
+            added += j2 - j1
+
+    return table, added, removed
+
+
 def _print_tool_result(
     name: str,
     result: str,
@@ -285,29 +352,28 @@ def _print_tool_result(
                 n = min(len(lines), 30)
                 preview = "\n".join(lines[:n])
                 more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
-                syn = Syntax(preview + more, ext or "text", theme="one-dark", line_numbers=True)
+                body: Any = Syntax(
+                    preview + more, ext or "text", theme="one-dark", line_numbers=True
+                )
                 title = f"[{TEXT_MUTED}]{short}[/]  [{SUCCESS}]new file[/]"
             else:
-                old_lines = old_content.splitlines(keepends=True)
-                new_lines = new_content.splitlines(keepends=True)
-                diff = list(
-                    difflib.unified_diff(
-                        old_lines, new_lines, fromfile=f"a/{short}", tofile=f"b/{short}", n=3
-                    )
-                )
-                if not diff:
+                old_ls = old_content.splitlines(keepends=True)
+                new_ls = new_content.splitlines(keepends=True)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                if n_added == 0 and n_removed == 0:
                     console.print(
                         f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
                     )
                     return
-                cap = 80
-                diff_str = "".join(diff[:cap])
-                if len(diff) > cap:
-                    diff_str += f"\n… ({len(diff) - cap} more lines)"
-                syn = Syntax(diff_str, "diff", theme="one-dark")
-                title = f"[{TEXT_MUTED}]{short}[/]  [{WARNING}]modified[/]"
+                parts = []
+                if n_added:
+                    parts.append(f"[{SUCCESS}]+{n_added}[/]")
+                if n_removed:
+                    parts.append(f"[{ERROR}]-{n_removed}[/]")
+                title = f"[{TEXT_MUTED}]{short}[/]  {' '.join(parts)}"
+                body = diff_table
             console.print(
-                _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+                _Panel(body, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
             )
             return
     if name == "run_shell" and args:
