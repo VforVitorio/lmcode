@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import functools
 import inspect
 import pathlib
@@ -246,8 +247,80 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
-def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = None) -> None:
-    """Print a tool result — syntax-highlighted panel for read_file, one-liner otherwise."""
+def _render_diff_sidebyside(
+    old_lines: list[str], new_lines: list[str], max_rows: int = 50
+) -> tuple[Table, int, int]:
+    """Build a side-by-side diff table (old | new) and return (table, n_added, n_removed)."""
+    # Diff palette — synthesised from Claude Code/Codex source + GitHub Primer research.
+    # Backgrounds: Codex-style warm tints (confirmed closest to Claude Code post-v2.0.70).
+    # Foreground: Catppuccin palette — softer than ODP, less harsh than pure red/green.
+    # Equal bg: subtle violet-tinted neutral to keep the panel cohesive.
+    _EQ_BG = "#1c1a2e"  # unchanged lines — violet-tinted neutral
+    _DEL_FG = "#f38ba8"  # Catppuccin Mocha rose — warm, not harsh
+    _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon (Claude Code style)
+    _ADD_FG = "#a6e3a1"  # Catppuccin Mocha green — soft, clearly "added"
+    _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
+    _SEP = Text("│", style=f"dim {ACCENT}")
+
+    table = Table(box=None, padding=(0, 1), show_header=False, expand=True)
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+    table.add_column(width=1, no_wrap=True)  # separator
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+
+    added = removed = rows = 0
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+
+    def _row(left: Text, right: Text) -> None:
+        table.add_row(left, _SEP, right)
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if rows >= max_rows:
+            break
+        if op == "equal":
+            for old, new in zip(old_lines[i1:i2], new_lines[j1:j2], strict=False):
+                _row(
+                    Text(old.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                    Text(new.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                )
+                rows += 1
+        elif op == "replace":
+            old_chunk = old_lines[i1:i2]
+            new_chunk = new_lines[j1:j2]
+            for i in range(max(len(old_chunk), len(new_chunk))):
+                _row(
+                    Text(
+                        old_chunk[i].rstrip("\n") if i < len(old_chunk) else "",
+                        style=f"{_DEL_FG} on {_DEL_BG}",
+                    ),
+                    Text(
+                        new_chunk[i].rstrip("\n") if i < len(new_chunk) else "",
+                        style=f"{_ADD_FG} on {_ADD_BG}",
+                    ),
+                )
+                rows += 1
+            removed += i2 - i1
+            added += j2 - j1
+        elif op == "delete":
+            for line in old_lines[i1:i2]:
+                _row(Text(line.rstrip("\n"), style=f"{_DEL_FG} on {_DEL_BG}"), Text(""))
+                rows += 1
+            removed += i2 - i1
+        elif op == "insert":
+            for line in new_lines[j1:j2]:
+                _row(Text(""), Text(line.rstrip("\n"), style=f"{_ADD_FG} on {_ADD_BG}"))
+                rows += 1
+            added += j2 - j1
+
+    return table, added, removed
+
+
+def _print_tool_result(
+    name: str,
+    result: str,
+    args: dict[str, Any] | None = None,
+    old_content: str | None = None,
+) -> None:
+    """Print a tool result — syntax panel for read_file/write_file, one-liner otherwise."""
     if name == "read_file" and args:
         path = args.get("path", "")
         if path and result and not result.startswith("error:"):
@@ -266,6 +339,41 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
             console.print(
                 _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+            )
+            return
+    if name == "write_file" and args:
+        path = args.get("path", "")
+        new_content = args.get("content", "")
+        if path and new_content and not result.startswith("error:"):
+            short = pathlib.Path(path).name
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            if old_content is None:
+                lines = new_content.splitlines()
+                n = min(len(lines), 30)
+                preview = "\n".join(lines[:n])
+                more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+                body: Any = Syntax(
+                    preview + more, ext or "text", theme="one-dark", line_numbers=True
+                )
+                title = f"[{TEXT_MUTED}]{short}[/]  [{SUCCESS}]new file[/]"
+            else:
+                old_ls = old_content.splitlines(keepends=True)
+                new_ls = new_content.splitlines(keepends=True)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                if n_added == 0 and n_removed == 0:
+                    console.print(
+                        f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
+                    )
+                    return
+                parts = []
+                if n_added:
+                    parts.append(f"[{SUCCESS}]+{n_added}[/]")
+                if n_removed:
+                    parts.append(f"[{ERROR}]-{n_removed}[/]")
+                title = f"[{TEXT_MUTED}]{short}[/]  {' '.join(parts)}"
+                body = diff_table
+            console.print(
+                _Panel(body, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
             )
             return
     if name == "run_shell" and args:
@@ -301,8 +409,15 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     @functools.wraps(fn)
     def _wrapper(*args: Any, **kwargs: Any) -> str:
         _print_tool_call(fn.__name__, kwargs)
+        old_content: str | None = None
+        if fn.__name__ == "write_file":
+            try:
+                p = pathlib.Path(kwargs.get("path", ""))
+                old_content = p.read_text(encoding="utf-8") if p.exists() else None
+            except Exception:
+                pass
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result), kwargs)
+        _print_tool_result(fn.__name__, str(result), kwargs, old_content=old_content)
         return result
 
     return _wrapper
