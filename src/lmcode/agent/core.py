@@ -255,11 +255,11 @@ def _render_diff_sidebyside(
     # Backgrounds: Codex-style warm tints (confirmed closest to Claude Code post-v2.0.70).
     # Foreground: Catppuccin palette — softer than ODP, less harsh than pure red/green.
     # Equal bg: subtle violet-tinted neutral to keep the panel cohesive.
-    _EQ_BG = "#1c1a2e"    # unchanged lines — violet-tinted neutral
-    _DEL_FG = "#f38ba8"   # Catppuccin Mocha rose — warm, not harsh
-    _DEL_BG = "#4a221d"   # Codex dark-TC del bg — warm maroon (Claude Code style)
-    _ADD_FG = "#a6e3a1"   # Catppuccin Mocha green — soft, clearly "added"
-    _ADD_BG = "#1e3a2a"   # Codex dark-TC add bg — deep forest green
+    _EQ_BG = "#1c1a2e"  # unchanged lines — violet-tinted neutral
+    _DEL_FG = "#f38ba8"  # Catppuccin Mocha rose — warm, not harsh
+    _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon (Claude Code style)
+    _ADD_FG = "#a6e3a1"  # Catppuccin Mocha green — soft, clearly "added"
+    _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
     _SEP = Text("│", style=f"dim {ACCENT}")
 
     table = Table(box=None, padding=(0, 1), show_header=False, expand=True)
