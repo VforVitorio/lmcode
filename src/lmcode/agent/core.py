@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import functools
 import inspect
 import pathlib
@@ -246,8 +247,13 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
-def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = None) -> None:
-    """Print a tool result — syntax-highlighted panel for read_file, one-liner otherwise."""
+def _print_tool_result(
+    name: str,
+    result: str,
+    args: dict[str, Any] | None = None,
+    old_content: str | None = None,
+) -> None:
+    """Print a tool result — syntax panel for read_file/write_file, one-liner otherwise."""
     if name == "read_file" and args:
         path = args.get("path", "")
         if path and result and not result.startswith("error:"):
@@ -264,6 +270,42 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             )
             short = pathlib.Path(path).name
             title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
+            console.print(
+                _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+            )
+            return
+    if name == "write_file" and args:
+        path = args.get("path", "")
+        new_content = args.get("content", "")
+        if path and new_content and not result.startswith("error:"):
+            short = pathlib.Path(path).name
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            if old_content is None:
+                lines = new_content.splitlines()
+                n = min(len(lines), 30)
+                preview = "\n".join(lines[:n])
+                more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+                syn = Syntax(preview + more, ext or "text", theme="one-dark", line_numbers=True)
+                title = f"[{TEXT_MUTED}]{short}[/]  [{SUCCESS}]new file[/]"
+            else:
+                old_lines = old_content.splitlines(keepends=True)
+                new_lines = new_content.splitlines(keepends=True)
+                diff = list(
+                    difflib.unified_diff(
+                        old_lines, new_lines, fromfile=f"a/{short}", tofile=f"b/{short}", n=3
+                    )
+                )
+                if not diff:
+                    console.print(
+                        f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
+                    )
+                    return
+                cap = 80
+                diff_str = "".join(diff[:cap])
+                if len(diff) > cap:
+                    diff_str += f"\n… ({len(diff) - cap} more lines)"
+                syn = Syntax(diff_str, "diff", theme="one-dark")
+                title = f"[{TEXT_MUTED}]{short}[/]  [{WARNING}]modified[/]"
             console.print(
                 _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
             )
@@ -301,8 +343,15 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     @functools.wraps(fn)
     def _wrapper(*args: Any, **kwargs: Any) -> str:
         _print_tool_call(fn.__name__, kwargs)
+        old_content: str | None = None
+        if fn.__name__ == "write_file":
+            try:
+                p = pathlib.Path(kwargs.get("path", ""))
+                old_content = p.read_text(encoding="utf-8") if p.exists() else None
+            except Exception:
+                pass
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result), kwargs)
+        _print_tool_result(fn.__name__, str(result), kwargs, old_content=old_content)
         return result
 
     return _wrapper
