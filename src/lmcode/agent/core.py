@@ -1003,13 +1003,33 @@ class Agent:
                         Spinner(_SPINNER, text=" thinking.", style=ACCENT),
                     )
                     self._raw_history.append(("user", stripped))
+                    _interrupted = False
                     with Live(
                         initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(model, user_input, live=live)
+                        try:
+                            response, stats = await self._run_turn(model, user_input, live=live)
+                        except KeyboardInterrupt:
+                            _interrupted = True
+
+                    if _interrupted:
+                        # Roll back: remove the user message added above and
+                        # rebuild the chat so no orphaned message remains.
+                        self._raw_history.pop()
+                        self._chat = self._init_chat()
+                        for _role, _msg in self._raw_history:
+                            if _role == "user":
+                                self._chat.add_user_message(_msg)
+                            else:
+                                self._chat.add_assistant_response(_msg)
+                        console.print(f"\n[{TEXT_MUTED}]^C[/]")
+                        console.print(f"[italic {TEXT_MUTED}]interrupted[/]")
+                        console.print(Rule(style=f"dim {ACCENT}"))
+                        continue
+
                     self._raw_history.append(("assistant", response))
 
                     msg = Text()
