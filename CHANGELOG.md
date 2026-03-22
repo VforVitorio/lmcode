@@ -9,8 +9,13 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.6.0] - 2026-03-22
+
 ### Fixed
-- **LM Studio disconnect** — closing LM Studio mid-session now shows a clean `LM Studio disconnected → restart LM Studio and run lmcode again` message instead of a raw traceback. Catches `LMStudioWebsocketError` and `LMStudioChannelClosedError` from the SDK (#70).
+- **LM Studio disconnect** — closing LM Studio mid-session now shows a clean `LM Studio disconnected → restart LM Studio and run lmcode again` message instead of a raw traceback. Catches `LMStudioServerError` (the actual exception on disconnect) and `LMStudioWebsocketError` from the SDK (#70).
+- **SDK WebSocket JSON noise suppression** — `{"event": "Websocket failed, terminating session."}` lines no longer appear on disconnect. Previous approach (`logging.getLogger().addFilter()`) was ineffective because records from unconfigured loggers reach `logging.lastResort` directly, bypassing root logger filters. Fix wraps `logging.lastResort` itself and keeps `sys.stderr` as belt-and-suspenders.
 
 ---
 
