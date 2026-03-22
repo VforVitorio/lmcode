@@ -57,24 +57,28 @@ from lmcode.ui.status import (
     next_mode,
 )
 
+# Noise phrases emitted by the LM Studio SDK on disconnect / Ctrl+C.
+_SDK_NOISE: tuple[str, ...] = (
+    "already closed channel",
+    "Websocket failed, terminating session",
+)
+
 
 class _FilterSDKNoise:
     """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
 
-    After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
-    fragments to the cancelled channel and emits a warning through Python's logging
-    module.  With no configured handlers the record reaches ``logging.lastResort``
-    which writes to ``sys.stderr``.  We suppress the line here so it never reaches
-    the terminal.  All other writes pass through unchanged.
+    When LM Studio closes or Ctrl+C is pressed, the SDK's background threads
+    log structured JSON lines via Python's ``logging`` module.  Records from
+    loggers with no configured handlers reach ``logging.lastResort`` which
+    writes directly to ``sys.stderr``, bypassing root-logger filters.
+    This wrapper intercepts those writes at the stream level.
     """
 
     def __init__(self, stream: Any) -> None:
         self._stream = stream
 
-    _SUPPRESSED = ("already closed channel", "Websocket failed, terminating session")
-
     def write(self, text: str) -> int:
-        if not any(s in text for s in self._SUPPRESSED):
+        if not any(s in text for s in _SDK_NOISE):
             self._stream.write(text)
         return len(text)
 
@@ -85,18 +89,31 @@ class _FilterSDKNoise:
         return getattr(self._stream, name)
 
 
-class _SDKNoiseFilter(logging.Filter):
-    """Logging filter that drops 'already closed channel' records from the SDK."""
+class _FilteredLastResort:
+    """Wraps ``logging.lastResort`` to drop SDK noise records before they reach stderr.
 
-    _SUPPRESSED = ("already closed channel", "Websocket failed, terminating session")
+    Records from loggers with no configured handlers bypass root-logger filters
+    and go directly to ``logging.lastResort``.  Wrapping ``lastResort.handle``
+    is the only reliable interception point for those records.
+    """
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        msg = record.getMessage()
-        return not any(s in msg for s in self._SUPPRESSED)
+    def __init__(self, original: Any) -> None:
+        self._original = original
+
+    @property
+    def level(self) -> int:
+        """Proxy the level attribute so logging internals still work."""
+        return self._original.level  # type: ignore[no-any-return]
+
+    def handle(self, record: logging.LogRecord) -> None:
+        """Drop noisy records; forward everything else to the original handler."""
+        if not any(s in record.getMessage() for s in _SDK_NOISE):
+            self._original.handle(record)
 
 
-# Belt-and-suspenders: filter at the logging level AND at the stderr write level.
-logging.getLogger().addFilter(_SDKNoiseFilter())
+# Replace logging.lastResort so SDK noise never reaches stderr via the logging path.
+logging.lastResort = _FilteredLastResort(logging.lastResort)  # type: ignore[assignment]
+# Belt-and-suspenders: also wrap sys.stderr for any direct writes.
 sys.stderr = _FilterSDKNoise(sys.stderr)
 
 console = Console()
