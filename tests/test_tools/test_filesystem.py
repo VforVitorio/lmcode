@@ -234,6 +234,35 @@ def test_write_file_byte_count_in_result(tmp_path: Path) -> None:
     assert str(byte_count) in result
 
 
+def test_write_file_unescape_literal_newlines(tmp_path: Path) -> None:
+    """Content with literal \\n (two chars) but no real newlines is unescaped."""
+    target = tmp_path / "escaped.py"
+    # Simulate what a 7B model sometimes produces: JSON-escaped sequences
+    escaped = "def foo():\\n    return 1\\n"
+    write_file(str(target), escaped)
+    written = target.read_text(encoding="utf-8")
+    assert "\n" in written
+    assert "\\n" not in written
+    assert written == "def foo():\n    return 1\n"
+
+
+def test_write_file_unescape_preserves_real_newlines(tmp_path: Path) -> None:
+    """Content that already has real newlines is NOT unescaped."""
+    target = tmp_path / "normal.py"
+    normal = "def foo():\n    return 1\n"
+    write_file(str(target), normal)
+    assert target.read_text(encoding="utf-8") == normal
+
+
+def test_write_file_unescape_tabs_and_quotes(tmp_path: Path) -> None:
+    """Literal \\t and \\" sequences are also unescaped together with \\n."""
+    target = tmp_path / "mixed.txt"
+    escaped = 'key:\\t\\"value\\"\\nend'
+    write_file(str(target), escaped)
+    written = target.read_text(encoding="utf-8")
+    assert written == 'key:\t"value"\nend'
+
+
 # ---------------------------------------------------------------------------
 # list_files
 # ---------------------------------------------------------------------------
