@@ -247,11 +247,22 @@ def test_write_file_unescape_literal_newlines(tmp_path: Path) -> None:
 
 
 def test_write_file_unescape_preserves_real_newlines(tmp_path: Path) -> None:
-    """Content that already has real newlines is NOT unescaped."""
+    """Content with only real newlines (no literal \\n) is written as-is."""
     target = tmp_path / "normal.py"
     normal = "def foo():\n    return 1\n"
     write_file(str(target), normal)
     assert target.read_text(encoding="utf-8") == normal
+
+
+def test_write_file_unescape_mixed_newlines(tmp_path: Path) -> None:
+    """Content mixing real newlines and literal \\n sequences is fully unescaped."""
+    target = tmp_path / "mixed.py"
+    # Model emits: first line real \n, then literal \n for the rest
+    mixed = "def foo():\n    x = 1\\n    return x\\n"
+    write_file(str(target), mixed)
+    written = target.read_text(encoding="utf-8")
+    assert "\\n" not in written
+    assert written == "def foo():\n    x = 1\n    return x\n"
 
 
 def test_write_file_unescape_tabs_and_quotes(tmp_path: Path) -> None:
