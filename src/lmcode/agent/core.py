@@ -57,22 +57,28 @@ from lmcode.ui.status import (
     next_mode,
 )
 
+# Noise phrases emitted by the LM Studio SDK on disconnect / Ctrl+C.
+_SDK_NOISE: tuple[str, ...] = (
+    "already closed channel",
+    "Websocket failed, terminating session",
+)
+
 
 class _FilterSDKNoise:
     """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
 
-    After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
-    fragments to the cancelled channel and emits a warning through Python's logging
-    module.  With no configured handlers the record reaches ``logging.lastResort``
-    which writes to ``sys.stderr``.  We suppress the line here so it never reaches
-    the terminal.  All other writes pass through unchanged.
+    When LM Studio closes or Ctrl+C is pressed, the SDK's background threads
+    log structured JSON lines via Python's ``logging`` module.  Records from
+    loggers with no configured handlers reach ``logging.lastResort`` which
+    writes directly to ``sys.stderr``, bypassing root-logger filters.
+    This wrapper intercepts those writes at the stream level.
     """
 
     def __init__(self, stream: Any) -> None:
         self._stream = stream
 
     def write(self, text: str) -> int:
-        if "already closed channel" not in text:
+        if not any(s in text for s in _SDK_NOISE):
             self._stream.write(text)
         return len(text)
 
@@ -83,15 +89,31 @@ class _FilterSDKNoise:
         return getattr(self._stream, name)
 
 
-class _SDKNoiseFilter(logging.Filter):
-    """Logging filter that drops 'already closed channel' records from the SDK."""
+class _FilteredLastResort:
+    """Wraps ``logging.lastResort`` to drop SDK noise records before they reach stderr.
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        return "already closed channel" not in record.getMessage()
+    Records from loggers with no configured handlers bypass root-logger filters
+    and go directly to ``logging.lastResort``.  Wrapping ``lastResort.handle``
+    is the only reliable interception point for those records.
+    """
+
+    def __init__(self, original: Any) -> None:
+        self._original = original
+
+    @property
+    def level(self) -> int:
+        """Proxy the level attribute so logging internals still work."""
+        return self._original.level  # type: ignore[no-any-return]
+
+    def handle(self, record: logging.LogRecord) -> None:
+        """Drop noisy records; forward everything else to the original handler."""
+        if not any(s in record.getMessage() for s in _SDK_NOISE):
+            self._original.handle(record)
 
 
-# Belt-and-suspenders: filter at the logging level AND at the stderr write level.
-logging.getLogger().addFilter(_SDKNoiseFilter())
+# Replace logging.lastResort so SDK noise never reaches stderr via the logging path.
+logging.lastResort = _FilteredLastResort(logging.lastResort)  # type: ignore[assignment]
+# Belt-and-suspenders: also wrap sys.stderr for any direct writes.
 sys.stderr = _FilterSDKNoise(sys.stderr)
 
 console = Console()
@@ -1102,6 +1124,8 @@ class Agent:
         except lms.LMStudioModelNotFoundError:
             console.print(f"\n[{WARNING}]model ejected[/] — the model was unloaded from LM Studio")
             console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
+        except (lms.LMStudioWebsocketError, lms.LMStudioServerError):
+            _print_lmstudio_closed()
         except RuntimeError as e:
             console.print(f"[{ERROR}]error:[/] {e}")
         except (ConnectionRefusedError, OSError) as e:
@@ -1167,6 +1191,12 @@ def _print_connection_error(base_url: str) -> None:
     console.print(
         f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]"
     )  # noqa: E501
+
+
+def _print_lmstudio_closed() -> None:
+    """Print a user-friendly message when LM Studio closes mid-session."""
+    console.print(f"\n[{ERROR}]LM Studio disconnected[/]")
+    console.print(f"[{TEXT_MUTED}]→ restart LM Studio and run lmcode again[/]")
 
 
 # ---------------------------------------------------------------------------

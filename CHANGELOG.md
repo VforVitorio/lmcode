@@ -9,6 +9,9 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **LM Studio disconnect** — closing LM Studio mid-session now shows a clean `LM Studio disconnected → restart LM Studio and run lmcode again` message instead of a raw traceback. Catches `LMStudioWebsocketError` and `LMStudioChannelClosedError` from the SDK (#70).
+
 ---
 
 <!-- Add new versions below this line, newest first -->
