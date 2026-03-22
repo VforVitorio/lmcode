@@ -127,16 +127,16 @@ async def test_run_turn_adds_to_chat_history() -> None:
 
 def test_wrap_tool_verbose_positional_args_merged() -> None:
     """Wrapper merges positional args into kwargs by name so panels can look up values."""
-    calls: list[dict[str, object]] = []
 
     def _my_tool(path: str, flag: bool = False) -> str:
         return "ok"
 
     wrapped = _wrap_tool_verbose(_my_tool)
 
-    with patch("lmcode.agent.core._print_tool_call") as mock_call, patch(
-        "lmcode.agent.core._print_tool_result"
-    ) as mock_result:
+    with (
+        patch("lmcode.agent.core._print_tool_call") as mock_call,
+        patch("lmcode.agent.core._print_tool_result") as mock_result,
+    ):
         wrapped("/some/path", True)  # positional args, no kwargs
 
     # _print_tool_call must receive the named dict, not an empty one
@@ -157,8 +157,9 @@ def test_wrap_tool_verbose_kwargs_still_work() -> None:
 
     wrapped = _wrap_tool_verbose(_tool)
 
-    with patch("lmcode.agent.core._print_tool_call") as mock_call, patch(
-        "lmcode.agent.core._print_tool_result"
+    with (
+        patch("lmcode.agent.core._print_tool_call") as mock_call,
+        patch("lmcode.agent.core._print_tool_result"),
     ):
         wrapped(command="echo hi")
 

@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import functools
 import inspect
+import logging
 import pathlib
 import random
 import sys
@@ -58,12 +59,13 @@ from lmcode.ui.status import (
 
 
 class _FilterSDKNoise:
-    """Transparent stdout wrapper that silences LM Studio SDK WebSocket noise.
+    """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
 
     After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
-    fragments to the cancelled channel and prints JSON lines containing
-    "already closed channel" directly to stdout (not via Python logging).
-    All other writes pass through unchanged.
+    fragments to the cancelled channel and emits a warning through Python's logging
+    module.  With no configured handlers the record reaches ``logging.lastResort``
+    which writes to ``sys.stderr``.  We suppress the line here so it never reaches
+    the terminal.  All other writes pass through unchanged.
     """
 
     def __init__(self, stream: Any) -> None:
@@ -81,7 +83,16 @@ class _FilterSDKNoise:
         return getattr(self._stream, name)
 
 
-sys.stdout = _FilterSDKNoise(sys.stdout)  # type: ignore[assignment]
+class _SDKNoiseFilter(logging.Filter):
+    """Logging filter that drops 'already closed channel' records from the SDK."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return "already closed channel" not in record.getMessage()
+
+
+# Belt-and-suspenders: filter at the logging level AND at the stderr write level.
+logging.getLogger().addFilter(_SDKNoiseFilter())
+sys.stderr = _FilterSDKNoise(sys.stderr)
 
 console = Console()
 
