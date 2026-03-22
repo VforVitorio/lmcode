@@ -9,27 +9,50 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- Initial project structure
-- README, ROADMAP, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY docs
-- pyproject.toml with uv
-
 ---
 
 <!-- Add new versions below this line, newest first -->
 
-<!--
-## [0.1.0] - YYYY-MM-DD
+## [0.5.0] - 2026-03-22
 
 ### Added
-- ...
+- **Ctrl+C interrupt mid-generation** — pressing Ctrl+C returns to the input prompt instead of exiting lmcode. Displays `^C` + italic `interrupted` with a Rule separator. Chat history is rolled back cleanly so the next turn has no dangling context.
+- **Syntax-highlighted diff blocks for `write_file`** — when a file is overwritten the agent displays a side-by-side diff with `+`/`-` counts, Catppuccin colours, and line numbers. New files get a "new file" panel instead.
+- **Playground folder** — `playground/` sandbox directory for manual end-to-end feature testing.
+- **`/history [n]` slash command** — show last _n_ turns as Rich panels.
+- **Ctrl+R history search** — prompt-toolkit reverse history search.
+- **Tab mode cycling** — pressing Tab cycles through `ask → auto → strict → ask` permission modes.
+- **Ghost-text autocomplete** — slash commands show inline ghost-text suggestions accepted with Tab.
 
 ### Changed
-- ...
+- **`run_shell` tool panel** — output is now wrapped in an IN/OUT panel with a separator Rule and uppercase labels.
+- **File preview panel** — `read_file` results render in a one-dark themed panel with violet rounded border and line numbers.
+- **System prompt rewrite** — tool-first framing with hard constraints, environment block, and anti-hallucination rules tuned for 7B models.
+- **Tool docstrings** — rewritten with explicit use-case guidance to improve tool-calling reliability on small models.
 
 ### Fixed
-- ...
+- **Verbose panels always shown** — the LM Studio SDK calls tools with positional args; `kwargs` was empty causing panels to be skipped. Fixed with `inspect.signature` positional-arg merge in `_wrap_tool_verbose`.
+- **`write_file` escape sequences** — models that emit literal `\n` / `\t` / `\"` (no real newlines in the string) now have those sequences unescaped before writing to disk.
+- **SDK "already closed channel" noise** — the warning emitted by the LM Studio WebSocket layer after Ctrl+C is now suppressed via a root-logger `logging.Filter` and a `sys.stderr` wrapper.
+- **Completion menu colours** — subtle dark indigo background, violet highlight, no harsh colour blocks.
+- **CI lint and typecheck** — fixed ruff E402 and import-sort failures introduced during UX work.
 
-### Removed
-- ...
--->
+---
+
+## [0.1.0] - 2025-01-01
+
+### Added
+- Initial project structure with `agent/`, `cli/`, `tools/`, `config/`, `ui/`, `session/`, `mcp/`, `plugins/` packages.
+- `lmcode chat` — interactive REPL powered by LM Studio `model.act()` tool loop.
+- Core tools: `read_file`, `write_file`, `list_files`, `run_shell`, `search_code`.
+- Tool registry (`@register` decorator).
+- Pydantic-settings config (`~/.config/lmcode/config.toml` + `LMCODE_*` env vars).
+- `LMCODE.md` context injection (walks directory tree upward).
+- Animated dots spinner with state labels (`thinking` / `working` / `finishing`).
+- Slash commands: `/help`, `/tokens`, `/status`, `/compact`, `/verbose`, `/clear`, `/history`.
+- Slash command ghost-text autocomplete and borderless dropdown.
+- Permission modes: `ask`, `auto`, `strict`.
+- ASCII art startup banner.
+- `lmcode config list/get/set` CLI.
+- README, ROADMAP, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, DESIGN, SKELETON docs.
+- CI workflow: test (pytest + coverage), lint (ruff), typecheck (mypy).

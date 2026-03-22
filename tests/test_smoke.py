@@ -12,7 +12,7 @@ runner = CliRunner()
 
 def test_version_string() -> None:
     assert isinstance(lmcode.__version__, str)
-    assert lmcode.__version__ == "0.1.0"
+    assert lmcode.__version__ == "0.5.0"
 
 
 def test_cli_help() -> None:
@@ -24,7 +24,7 @@ def test_cli_help() -> None:
 def test_cli_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "0.5.0" in result.output
 
 
 def test_lmcode_md_no_file(tmp_path) -> None:
