@@ -1102,6 +1102,8 @@ class Agent:
         except lms.LMStudioModelNotFoundError:
             console.print(f"\n[{WARNING}]model ejected[/] — the model was unloaded from LM Studio")
             console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
+        except (lms.LMStudioWebsocketError, lms.LMStudioChannelClosedError):
+            _print_lmstudio_closed()
         except RuntimeError as e:
             console.print(f"[{ERROR}]error:[/] {e}")
         except (ConnectionRefusedError, OSError) as e:
@@ -1167,6 +1169,12 @@ def _print_connection_error(base_url: str) -> None:
     console.print(
         f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]"
     )  # noqa: E501
+
+
+def _print_lmstudio_closed() -> None:
+    """Print a user-friendly message when LM Studio closes mid-session."""
+    console.print(f"\n[{ERROR}]LM Studio disconnected[/]")
+    console.print(f"[{TEXT_MUTED}]→ restart LM Studio and run lmcode again[/]")
 
 
 # ---------------------------------------------------------------------------
