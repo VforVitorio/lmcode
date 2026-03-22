@@ -19,6 +19,6 @@ def divide(a: float, b: float) -> float:
         return a / b
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print(divide(10, 2))  # Should print 5.0
-    print(divide(5, 0))   # Should print error: Division by zero
+    print(divide(5, 0))  # Should print error: Division by zero
