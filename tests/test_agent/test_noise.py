@@ -6,8 +6,7 @@ import logging
 from io import StringIO
 from unittest.mock import MagicMock
 
-from lmcode.agent._noise import SDK_NOISE, _FilterSDKNoise, _FilteredLastResort
-
+from lmcode.agent._noise import SDK_NOISE, _FilteredLastResort, _FilterSDKNoise
 
 # ---------------------------------------------------------------------------
 # SDK_NOISE constant

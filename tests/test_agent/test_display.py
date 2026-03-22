@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +14,6 @@ from lmcode.agent._display import (
     _print_history,
     _render_diff_sidebyside,
 )
-
 
 # ---------------------------------------------------------------------------
 # SLASH_COMMANDS
@@ -184,9 +182,6 @@ def test_print_history_empty(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_print_history_limits_to_n() -> None:
     """Only renders the last n turns regardless of history length."""
-    history = [("user", f"q{i}") for i in range(10)] + [
-        ("assistant", f"a{i}") for i in range(10)
-    ]
     # Interleave: user/assistant alternating
     interleaved: list[tuple[str, str]] = []
     for i in range(10):
@@ -197,7 +192,9 @@ def test_print_history_limits_to_n() -> None:
         _print_history(interleaved, n=2)
         # With 10 pairs and n=2, only 2 panels per pair × 2 pairs = 4 panel prints
         panel_calls = [
-            c for c in mock_console.print.call_args_list if c.args  # non-empty prints
+            c
+            for c in mock_console.print.call_args_list
+            if c.args  # non-empty prints
         ]
         # At least 4 calls (2 user + 2 assistant panels) plus surrounding newlines
         assert len(panel_calls) >= 4
