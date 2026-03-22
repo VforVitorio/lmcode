@@ -6,8 +6,10 @@ import asyncio
 import difflib
 import functools
 import inspect
+import logging
 import pathlib
 import random
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -54,6 +56,43 @@ from lmcode.ui.status import (
     build_status_line,
     next_mode,
 )
+
+
+class _FilterSDKNoise:
+    """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
+
+    After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
+    fragments to the cancelled channel and emits a warning through Python's logging
+    module.  With no configured handlers the record reaches ``logging.lastResort``
+    which writes to ``sys.stderr``.  We suppress the line here so it never reaches
+    the terminal.  All other writes pass through unchanged.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        if "already closed channel" not in text:
+            self._stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+class _SDKNoiseFilter(logging.Filter):
+    """Logging filter that drops 'already closed channel' records from the SDK."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return "already closed channel" not in record.getMessage()
+
+
+# Belt-and-suspenders: filter at the logging level AND at the stderr write level.
+logging.getLogger().addFilter(_SDKNoiseFilter())
+sys.stderr = _FilterSDKNoise(sys.stderr)
 
 console = Console()
 
@@ -1003,13 +1042,39 @@ class Agent:
                         Spinner(_SPINNER, text=" thinking.", style=ACCENT),
                     )
                     self._raw_history.append(("user", stripped))
+                    _interrupted = False
                     with Live(
                         initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(model, user_input, live=live)
+                        try:
+                            response, stats = await self._run_turn(model, user_input, live=live)
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            # Python 3.12 asyncio raises CancelledError (not
+                            # KeyboardInterrupt) inside coroutines on Ctrl+C.
+                            # Uncancel the task so the loop does not re-raise.
+                            _task = asyncio.current_task()
+                            if _task is not None and _task.cancelling() > 0:
+                                _task.uncancel()
+                            _interrupted = True
+
+                    if _interrupted:
+                        # Roll back: remove the user message added above and
+                        # rebuild the chat so no orphaned message remains.
+                        self._raw_history.pop()
+                        self._chat = self._init_chat()
+                        for _role, _msg in self._raw_history:
+                            if _role == "user":
+                                self._chat.add_user_message(_msg)
+                            else:
+                                self._chat.add_assistant_response(_msg)
+                        console.print(f"\n[{TEXT_MUTED}]^C[/]")
+                        console.print(f"[italic {TEXT_MUTED}]interrupted[/]")
+                        console.print(Rule(style=f"dim {ACCENT}"))
+                        continue
+
                     self._raw_history.append(("assistant", response))
 
                     msg = Text()

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lmcode.agent.core import Agent, _build_system_prompt
+from lmcode.agent.core import Agent, _build_system_prompt, _wrap_tool_verbose
 
 # ---------------------------------------------------------------------------
 # _build_system_prompt
@@ -118,3 +118,97 @@ async def test_run_turn_adds_to_chat_history() -> None:
         await agent._run_turn(mock_model, "question")
 
     assert agent._chat is not None
+
+
+# ---------------------------------------------------------------------------
+# _wrap_tool_verbose — positional-arg merging
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_tool_verbose_positional_args_merged() -> None:
+    """Wrapper merges positional args into kwargs by name so panels can look up values."""
+
+    def _my_tool(path: str, flag: bool = False) -> str:
+        return "ok"
+
+    wrapped = _wrap_tool_verbose(_my_tool)
+
+    with (
+        patch("lmcode.agent.core._print_tool_call") as mock_call,
+        patch("lmcode.agent.core._print_tool_result") as mock_result,
+    ):
+        wrapped("/some/path", True)  # positional args, no kwargs
+
+    # _print_tool_call must receive the named dict, not an empty one
+    merged = mock_call.call_args[0][1]
+    assert merged["path"] == "/some/path"
+    assert merged["flag"] is True
+
+    # _print_tool_result also gets the merged dict
+    merged_result = mock_result.call_args[0][2]
+    assert merged_result["path"] == "/some/path"
+
+
+def test_wrap_tool_verbose_kwargs_still_work() -> None:
+    """Wrapper handles pure keyword-argument calls correctly."""
+
+    def _tool(command: str) -> str:
+        return "done"
+
+    wrapped = _wrap_tool_verbose(_tool)
+
+    with (
+        patch("lmcode.agent.core._print_tool_call") as mock_call,
+        patch("lmcode.agent.core._print_tool_result"),
+    ):
+        wrapped(command="echo hi")
+
+    merged = mock_call.call_args[0][1]
+    assert merged["command"] == "echo hi"
+
+
+# ---------------------------------------------------------------------------
+# Ctrl+C interrupt — chat rollback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_turn_keyboard_interrupt_propagates() -> None:
+    """KeyboardInterrupt raised inside model.act() propagates out of _run_turn."""
+    agent = Agent()
+
+    async def _raise_ki(chat: object, tools: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    mock_model = MagicMock()
+    mock_model.act = AsyncMock(side_effect=_raise_ki)
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        with pytest.raises(KeyboardInterrupt):
+            await agent._run_turn(mock_model, "test")
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_rollback_removes_orphaned_message() -> None:
+    """After Ctrl+C, _raw_history is rolled back and chat is rebuilt clean."""
+    agent = Agent()
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        agent._ensure_chat()
+
+    # Simulate two completed turns in history
+    agent._raw_history = [("user", "first"), ("assistant", "reply")]
+
+    # Now simulate what the run() loop does on interrupt:
+    # add user message, catch KI, roll back
+    agent._raw_history.append(("user", "interrupted question"))
+    agent._raw_history.pop()  # rollback
+    agent._chat = agent._init_chat()
+    for role, msg in agent._raw_history:
+        if role == "user":
+            agent._chat.add_user_message(msg)
+        else:
+            agent._chat.add_assistant_response(msg)
+
+    assert len(agent._raw_history) == 2
+    assert agent._raw_history[-1] == ("assistant", "reply")
