@@ -442,18 +442,23 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     functools.wraps so the LM Studio SDK can still build the correct JSON schema.
     """
 
+    _params = list(inspect.signature(fn).parameters.keys())
+
     @functools.wraps(fn)
     def _wrapper(*args: Any, **kwargs: Any) -> str:
-        _print_tool_call(fn.__name__, kwargs)
+        # Merge positional args into a named dict so panels can look up by name.
+        merged = {_params[i]: v for i, v in enumerate(args)}
+        merged.update(kwargs)
+        _print_tool_call(fn.__name__, merged)
         old_content: str | None = None
         if fn.__name__ == "write_file":
             try:
-                p = pathlib.Path(kwargs.get("path", ""))
+                p = pathlib.Path(merged.get("path", ""))
                 old_content = p.read_text(encoding="utf-8") if p.exists() else None
             except Exception:
                 pass
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result), kwargs, old_content=old_content)
+        _print_tool_result(fn.__name__, str(result), merged, old_content=old_content)
         return result
 
     return _wrapper

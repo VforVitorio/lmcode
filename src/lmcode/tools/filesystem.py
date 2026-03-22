@@ -186,6 +186,12 @@ def write_file(path: str, content: str) -> str:
         ext = Path(path).suffix.lower()
         return f"error: refusing to write binary file type '{ext}': {path}"
 
+    # Some models emit JSON-escaped sequences (e.g. literal \n instead of a
+    # real newline). Detect and unescape when the content has no real newlines
+    # but does contain the two-character sequence backslash-n.
+    if "\n" not in content and "\\n" in content:
+        content = content.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
     try:
         target = Path(path).expanduser().resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
