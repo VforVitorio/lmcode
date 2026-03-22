@@ -1,8 +1,10 @@
 # playground/test_newlines.py
-import os
 
-def hello():
+
+def hello() -> None:
+    """Print hello world."""
     print("hello world")
+
 
 if __name__ == "__main__":
     hello()
