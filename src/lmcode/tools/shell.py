@@ -54,24 +54,17 @@ def _combine_output(stdout: str, stderr: str) -> str:
 
 @register
 def run_shell(command: str, timeout: int = 30) -> str:
-    """Execute *command* in a system shell and return its output.
+    """Execute a shell command and return its output (stdout + stderr).
 
-    WARNING: This tool runs arbitrary shell commands with the same privileges
-    as the lmcode process.  It must only be used in trusted environments.
-    Never pass unsanitised user input directly to this function.
+    Use this tool whenever you need to:
+    - Run a Python script (e.g. "python script.py").
+    - Execute tests (e.g. "pytest", "npm test").
+    - Run git commands (e.g. "git status", "git diff").
+    - Install packages (e.g. "pip install X", "npm install").
+    - List files, check output, or perform any terminal operation.
 
-    Uses ``subprocess.run`` with ``shell=True``, so the full shell feature set
-    (pipes, redirects, environment variables) is available.
-
-    Args:
-        command: The shell command to execute.
-        timeout: Maximum seconds to wait before killing the process (default 30).
-
-    Returns:
-        Combined stdout and stderr (stderr prefixed with ``[stderr]``), capped
-        at ``_MAX_OUTPUT_CHARS`` characters.  Returns a timeout message if the
-        process does not finish within *timeout* seconds.  Returns an
-        ``"error: …"`` string on unexpected OS-level failures.
+    Returns the combined stdout and stderr. Returns an error string on
+    failure or a timeout message if the command exceeds the time limit.
     """
     try:
         result = subprocess.run(

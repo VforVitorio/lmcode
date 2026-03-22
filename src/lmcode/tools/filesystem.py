@@ -113,11 +113,16 @@ def _read_text(path: Path, max_bytes: int) -> tuple[str, bool]:
 
 @register
 def read_file(path: str) -> str:
-    """Read and return the text contents of a file at *path*.
+    """Read a file from disk and return its full text contents.
 
-    Respects the ``agent.max_file_bytes`` setting (default 100 KB).
-    Returns an error message string instead of raising on failure so the
-    agent loop can handle it gracefully.
+    Use this tool whenever you need to:
+    - See what a file contains before editing or analysing it.
+    - Verify the current state of a file.
+    - Read source code, configs, or any text file.
+
+    Always call this before writing to an existing file.
+    Returns an error string (starting with "error:") if the file does
+    not exist, is a directory, or is binary.
     """
     max_bytes = get_settings().agent.max_file_bytes
 
@@ -165,14 +170,17 @@ def _is_binary_extension(path: str) -> bool:
 
 @register
 def write_file(path: str, content: str) -> str:
-    """Write *content* to the file at *path*, creating parent directories as needed.
+    """Create or overwrite a file on disk with the given content.
 
-    Refuses to write files whose extension appears in the binary blocklist
-    (e.g. ``.pyc``, ``.exe``).  Always encodes content as UTF-8.
+    Use this tool whenever you need to:
+    - Create a new file.
+    - Edit or update an existing file (provide the full new content).
+    - Save any code, configuration, or text to disk.
 
-    Returns:
-        ``"wrote {n} bytes to {path}"`` on success, or an ``"error: …"``
-        string if the write is refused or fails.
+    Always call read_file first if the file already exists, so you can
+    preserve any parts you are not changing.
+    Creates parent directories automatically. Returns "wrote N bytes to
+    path" on success, or an error string on failure.
     """
     if _is_binary_extension(path):
         ext = Path(path).suffix.lower()
