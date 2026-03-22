@@ -11,7 +11,6 @@ import random
 from collections.abc import Callable
 from typing import Any
 
-import httpx
 import lmstudio as lms
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
@@ -1060,8 +1059,6 @@ class Agent:
             console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
         except RuntimeError as e:
             console.print(f"[{ERROR}]error:[/] {e}")
-        except (httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout):
-            _print_connection_error(settings.lmstudio.base_url)
         except (ConnectionRefusedError, OSError) as e:
             if isinstance(e, ConnectionRefusedError) or "Connect" in str(e):
                 _print_connection_error(settings.lmstudio.base_url)
