@@ -45,19 +45,20 @@ LM Studio   →   lmcode agent   →   your codebase
 ## Features
 
 - **Agent loop** — iterative tool-calling loop powered by `model.act()` from the LM Studio Python SDK
-- **Coding tools** — read files, write files, run shell commands, search code, run tests
-- **Session recorder** — every agent action saved as a structured event stream (JSONL)
-- **Session viewer** — TUI timeline of what the agent did, with diff viewer and replay
-- **MCP support** — connect any [MCP](https://modelcontextprotocol.io) server to give the agent new capabilities
-- **OpenAPI → MCP** — point lmcode at any OpenAPI spec and the endpoints become agent tools automatically (powered by [FastMCP](https://github.com/jlowin/fastmcp))
-- **Plugin system** — extend lmcode with plugins via entry points (pluggy-based)
-- **LMCODE.md** — per-repo memory file, like CLAUDE.md
-- **/compact** — summarises conversation history via the model, resets the chat, and injects the summary as context; shows a panel with summary preview and message count saved
-- **/tokens** — displays session-wide prompt (↑) and generated (↓) token totals, plus a context arc line (`◔ 38%  (14.2k / 32k tok)`)
-- **/hide-model** — toggles the model name in the live prompt (`● lmcode (model) [ask] ›` vs `● lmcode [ask] ›`)
-- **Cycling tips** — tips below the thinking spinner rotate every 8 seconds through a shuffled list
-- **Context window indicator** — arc chars `○◔◑◕●` with percentage shown in `/status` and `/tokens`; one-time warning at 80 % usage suggesting `/compact`
-- **Spinner keepalive** — asyncio keepalive task refreshes the spinner label every 100 ms during model prefill, preventing display freezes
+- **Coding tools** — read files, write files, list files, run shell commands, search code (ripgrep), git operations
+- **LMCODE.md** — per-repo memory file, like CLAUDE.md; injected into the system prompt automatically
+- **Animated spinner** — state labels (`thinking…` / `working…` / `finishing…`) with tool name + path during tool calls
+- **Tool output panels** — syntax-highlighted file previews, side-by-side diff blocks for edits, IN/OUT panels for shell commands
+- **Ghost-text autocomplete** — fish-shell style: type `/h` → dim `elp` appears, Tab accepts
+- **Persistent history** — Ctrl+R and Up-arrow recall prompts across sessions (`~/.lmcode/history`)
+- **Permission modes** — `ask` (confirm each tool), `auto` (run freely), `strict` (read-only); Tab cycles between them
+- **LMCODE.md** — per-repo context file injected into the system prompt
+- **/compact** — summarises conversation history via the model, resets the chat, and injects the summary as context
+- **/tokens** — session-wide prompt (↑) and generated (↓) token totals with context arc (`◔ 38%  14.2k / 32k tok`)
+- **/history [N]** — show last N conversation turns as bordered panels (default 5)
+- **/hide-model** — toggle model name visibility in the live prompt
+- **Cycling tips** — tips below the spinner rotate every 8 s through a shuffled list
+- **Context arc indicator** — `○◔◑◕●` with percentage in `/status` and `/tokens`; warns at 80 % usage
 
 ## Slash commands
 
@@ -67,6 +68,7 @@ LM Studio   →   lmcode agent   →   your codebase
 | `/status` | Show session stats, model info, and context window usage |
 | `/tokens` | Show session prompt (↑) and generated (↓) token totals with context arc |
 | `/compact` | Summarise history, reset chat, inject summary as context |
+| `/history [N]` | Show last N conversation turns as panels (default 5) |
 | `/hide-model` | Toggle model name visibility in the live prompt |
 | `/verbose` | Toggle verbose tool-call output |
 | `/tips` | Toggle cycling tips below the thinking spinner |
@@ -79,14 +81,20 @@ LM Studio   →   lmcode agent   →   your codebase
 
 | Component | Status |
 |---|---|
-| CLI skeleton (Typer + Rich) | 🔲 planned |
-| LM Studio adapter | 🔲 planned |
-| Agent loop + basic tools | 🔲 planned |
-| Session recorder | 🔲 planned |
-| MCP client | 🔲 planned |
-| OpenAPI → MCP dynamic servers | 🔲 planned |
-| Plugin system (pluggy) | 🔲 planned |
+| CLI skeleton (Typer + Rich) | ✅ done |
+| LM Studio adapter (`model.act`) | ✅ done |
+| Agent loop + basic tools | ✅ done |
+| Slash commands + UX polish | ✅ done |
+| Animated spinner + state labels | ✅ done |
+| Tool output panels (file, diff, shell) | ✅ done |
+| Ghost-text autocomplete + history | ✅ done |
+| Ctrl+C interrupt mid-generation | 🔶 in progress |
+| Streaming Markdown output | 🔶 in progress |
+| Interactive permission UI (ask mode) | 🔲 planned |
+| Session recorder (JSONL) | 🔲 planned |
 | Session viewer (Textual TUI) | 🔲 planned |
+| MCP client | 🔲 planned |
+| Plan mode / Agent mode | 🔲 planned |
 | VSCode extension | 🔲 planned |
 
 ---
@@ -129,16 +137,11 @@ Make sure LM Studio is running with a model loaded and the local server enabled.
 ```bash
 # start a chat session in the current repo
 lmcode chat
-
-# ask the agent to do something
-lmcode run "fix the failing tests in src/api/"
-
-# view what the agent did in the last session
-lmcode session view
-
-# connect an OpenAPI spec as tools
-lmcode mcp add --openapi https://petstore3.swagger.io/api/v3/openapi.json
 ```
+
+The agent will connect to LM Studio automatically. Type your request and press Enter. Use `/help` to see all slash commands.
+
+> **Recommended model:** Qwen2.5-Coder-7B-Instruct (Q4_K_M, ~4.5 GB VRAM) — best function calling for code tasks at 7B size.
 
 ---
 
@@ -152,38 +155,12 @@ Agent Core
      │
      ├── LM Studio SDK (model.act)
      │
-     ├── Tool Runner
-     │      ├── read_file / write_file / list_files
-     │      ├── run_shell
-     │      ├── search_code (ripgrep)
-     │      ├── git (status, diff, commit)
-     │      └── [MCP tools, plugin tools]
-     │
-     └── Session Recorder
-            │
-            ▼
-       sessions/session_001.jsonl
+     └── Tool Runner
+            ├── read_file / write_file / list_files
+            ├── run_shell
+            ├── search_code (ripgrep)
+            └── git (status, diff, commit)
 ```
-
-### MCP + OpenAPI
-
-lmcode can dynamically create MCP servers from OpenAPI specs using [FastMCP](https://github.com/jlowin/fastmcp):
-
-```bash
-# any REST API becomes agent tools
-lmcode mcp add --openapi ./my-api-spec.yaml --name my-api
-```
-
-Under the hood, FastMCP parses the spec and generates MCP-compatible tools for each endpoint. The agent can then call those tools natively in its loop.
-
-### Plugin system
-
-```bash
-pip install lmcode-docker-plugin
-# plugin is auto-discovered via entry_points — no config needed
-```
-
-Third-party plugins can add new tools, hooks, and MCP servers by implementing pluggy hookspecs.
 
 ---
 
@@ -222,33 +199,44 @@ uv run pytest
 
 ## Roadmap
 
-**v0.1 — MVP**
-- [ ] `lmcode chat` with basic tools
-- [ ] Session recording
-- [ ] Auto-connect to LM Studio
+**v0.1.0 — Basic chat** ✅
+- [x] `lmcode chat` with LM Studio connection
+- [x] Agent loop (`model.act`) + basic tools
+- [x] Auto-connect to LM Studio
 
-**v0.2 — MCP + plugins**
-- [ ] MCP client
-- [ ] OpenAPI → MCP
-- [ ] Plugin system
+**v0.2.0 — Full tool suite** ✅
+- [x] `write_file`, `list_files`, `run_shell`, `search_code` tools
+- [x] Banner + status bar
+- [x] Slash commands (`/help`, `/status`, `/verbose`, `/tools`, `/compact`)
 
-**v0.3 — UX polish** ✓
-- [x] `/compact` — summarise history and reset chat (#31)
-- [x] `/tokens` — session token totals and context arc (#29)
-- [x] `/hide-model` — toggle model name in prompt (#36)
-- [x] Cycling tips — rotate every 8 s during thinking (#38)
-- [x] Context window indicator — arc + % in `/status` and `/tokens` (#41)
-- [x] Spinner keepalive — asyncio task keeps label fresh during prefill (#39)
+**v0.3.0 — UX polish** ✅
+- [x] `/compact` — summarise history and reset chat
+- [x] `/tokens` — session token totals and context arc
+- [x] `/hide-model` — toggle model name in prompt
+- [x] Cycling tips — rotate every 8 s during thinking
+- [x] Context window indicator — arc `○◔◑◕●` + % in `/status` and `/tokens`
 
-**v0.4 — Session viewer**
-- [ ] Textual TUI
-- [ ] Diff viewer
-- [ ] Session replay
+**v0.4.0 — Input & display** ✅
+- [x] Animated spinner with state labels (`thinking…` / `working…` / `finishing…`)
+- [x] Ghost-text slash autocomplete (fish-shell style, Tab to accept)
+- [x] Persistent history — Ctrl+R / Up-arrow across sessions
+- [x] `read_file` syntax panel (one-dark, line numbers, violet border)
+- [x] `write_file` side-by-side diff block (Codex/Catppuccin palette)
+- [x] `run_shell` IN/OUT panel with separator
+- [x] `/history [N]` — show last N conversation turns
+
+**v0.5.0 — Agent modes** 🔶 in progress
+- [ ] Ctrl+C interrupt mid-generation (#60)
+- [ ] Streaming Markdown output (#56)
+- [ ] Interactive permission UI — diff view + arrow-key confirm in ask mode (#40)
+- [ ] Plan mode — model proposes a plan before executing (#21)
+- [ ] Agent mode — autonomous multi-step execution (#22)
 
 **v1.0**
-- [ ] Stable API
+- [ ] Session recorder + Textual TUI viewer
+- [ ] MCP client
+- [ ] Stable API + docs site
 - [ ] VSCode extension
-- [ ] Docs site
 
 ---
 
