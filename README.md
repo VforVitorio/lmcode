@@ -88,7 +88,8 @@ LM Studio   →   lmcode agent   →   your codebase
 | Animated spinner + state labels | ✅ done |
 | Tool output panels (file, diff, shell) | ✅ done |
 | Ghost-text autocomplete + history | ✅ done |
-| Ctrl+C interrupt mid-generation | 🔶 in progress |
+| Ctrl+C interrupt mid-generation | ✅ done |
+| Graceful LM Studio disconnect handling | ✅ done |
 | Streaming Markdown output | 🔶 in progress |
 | Interactive permission UI (ask mode) | 🔲 planned |
 | Session recorder (JSONL) | 🔲 planned |
@@ -225,12 +226,20 @@ uv run pytest
 - [x] `run_shell` IN/OUT panel with separator
 - [x] `/history [N]` — show last N conversation turns
 
-**v0.5.0 — Agent modes** 🔶 in progress
-- [ ] Ctrl+C interrupt mid-generation (#60)
+**v0.5.0 — Agent modes** ✅ done
+- [x] Ctrl+C interrupt mid-generation — returns to prompt, shows `^C` / `interrupted` (#60)
+- [x] Verbose tool panels always shown — fixed positional-arg merge in `_wrap_tool_verbose`
+- [x] `write_file` escape sequences — literal `\n`/`\t` unescaped before writing
+- [x] SDK channel noise suppression after Ctrl+C
 - [ ] Streaming Markdown output (#56)
 - [ ] Interactive permission UI — diff view + arrow-key confirm in ask mode (#40)
 - [ ] Plan mode — model proposes a plan before executing (#21)
 - [ ] Agent mode — autonomous multi-step execution (#22)
+
+**v0.6.0 — Stability** 🔶 in progress
+- [x] Graceful LM Studio disconnect handling (#70)
+- [ ] Git tools — `git_status`, `git_diff`, `git_commit`, `git_log`
+- [ ] Streaming Markdown output (#56)
 
 **v1.0**
 - [ ] Session recorder + Textual TUI viewer
