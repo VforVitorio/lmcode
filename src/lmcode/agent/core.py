@@ -71,8 +71,10 @@ class _FilterSDKNoise:
     def __init__(self, stream: Any) -> None:
         self._stream = stream
 
+    _SUPPRESSED = ("already closed channel", "Websocket failed, terminating session")
+
     def write(self, text: str) -> int:
-        if "already closed channel" not in text:
+        if not any(s in text for s in self._SUPPRESSED):
             self._stream.write(text)
         return len(text)
 
@@ -86,8 +88,11 @@ class _FilterSDKNoise:
 class _SDKNoiseFilter(logging.Filter):
     """Logging filter that drops 'already closed channel' records from the SDK."""
 
+    _SUPPRESSED = ("already closed channel", "Websocket failed, terminating session")
+
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
-        return "already closed channel" not in record.getMessage()
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SUPPRESSED)
 
 
 # Belt-and-suspenders: filter at the logging level AND at the stderr write level.
@@ -1102,7 +1107,7 @@ class Agent:
         except lms.LMStudioModelNotFoundError:
             console.print(f"\n[{WARNING}]model ejected[/] — the model was unloaded from LM Studio")
             console.print(f"[{TEXT_MUTED}]→ reload a model and run lmcode again[/]")
-        except (lms.LMStudioWebsocketError, lms.LMStudioChannelClosedError):
+        except (lms.LMStudioWebsocketError, lms.LMStudioServerError):
             _print_lmstudio_closed()
         except RuntimeError as e:
             console.print(f"[{ERROR}]error:[/] {e}")
