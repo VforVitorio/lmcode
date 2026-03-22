@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import functools
 import inspect
+import logging
 import pathlib
 import random
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -18,14 +21,17 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
+from rich import box
 from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.markup import escape as _escape
 from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 from lmcode import __version__
@@ -33,7 +39,16 @@ from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
-from lmcode.ui.colors import ACCENT, ACCENT_BRIGHT, BORDER, ERROR, SUCCESS, TEXT_MUTED, WARNING
+from lmcode.ui.colors import (
+    ACCENT,
+    ACCENT_BRIGHT,
+    BORDER,
+    ERROR,
+    SUCCESS,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WARNING,
+)
 from lmcode.ui.status import (
     _MODE_DESCRIPTIONS,
     MODES,
@@ -41,6 +56,43 @@ from lmcode.ui.status import (
     build_status_line,
     next_mode,
 )
+
+
+class _FilterSDKNoise:
+    """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
+
+    After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
+    fragments to the cancelled channel and emits a warning through Python's logging
+    module.  With no configured handlers the record reaches ``logging.lastResort``
+    which writes to ``sys.stderr``.  We suppress the line here so it never reaches
+    the terminal.  All other writes pass through unchanged.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        if "already closed channel" not in text:
+            self._stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+class _SDKNoiseFilter(logging.Filter):
+    """Logging filter that drops 'already closed channel' records from the SDK."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        return "already closed channel" not in record.getMessage()
+
+
+# Belt-and-suspenders: filter at the logging level AND at the stderr write level.
+logging.getLogger().addFilter(_SDKNoiseFilter())
+sys.stderr = _FilterSDKNoise(sys.stderr)
 
 console = Console()
 
@@ -80,18 +132,43 @@ _TIPS: list[str] = [
 ]
 
 _BASE_SYSTEM_PROMPT = """\
-You are lmcode, a local AI coding agent. You help users understand, write,
-debug, and refactor code. Be concise and direct.
+You are lmcode, a coding agent. You have NO built-in knowledge of the
+local filesystem. You CANNOT see file contents, directory listings, or
+command output unless you call the appropriate tool first. Every claim
+about a file's contents that is not backed by a read_file call is a
+hallucination.
 
-Only call a tool when the user's request explicitly requires reading or
-writing files, running a shell command, or searching through code.
-For greetings, general questions, explanations, or anything you can answer
-from your own knowledge — respond directly without calling any tools.
-When you do need to inspect a file, always use the available tools rather
-than guessing at its contents.
+<env>
+Working directory: {cwd}
+Platform: {platform}
+Shell: bash
+</env>
 
-Never output raw XML, HTML tags, JSON schemas, or tool definitions in your
-responses. Always reply in plain text or Markdown.
+## Available tools
+
+- **read_file(path)** — read a file. Call this FIRST before any edit.
+- **write_file(path, content)** — create or overwrite a file.
+- **list_files(path, pattern)** — list files recursively.
+- **run_shell(command)** — run a shell command; returns stdout + stderr.
+- **search_code(query, path)** — search files with ripgrep.
+
+## Mandatory rules
+
+1. **Always call a tool.** Never describe, invent, or recall file
+   contents. If you need to know what is in a file, call read_file —
+   every time, even if you think you saw it earlier.
+
+2. **read_file before write_file.** If the file already exists, call
+   read_file first. Then call write_file with the complete new content.
+
+3. **run_shell to execute.** Never say "I ran the code" without having
+   called run_shell. Never print hypothetical output.
+
+4. **Call tools, do not describe them.** If you plan to read a file,
+   read it — do not say "I will read it". Call the tool immediately.
+
+5. **Be concise after tools.** Tool results are shown to the user. Do
+   not repeat or reprint them. One or two sentences of summary is enough.
 """
 
 # ---------------------------------------------------------------------------
@@ -216,11 +293,16 @@ def _format_tool_signature(fn: Callable[..., Any]) -> str:
 
 
 def _build_system_prompt() -> str:
-    """Return the system prompt, appending any LMCODE.md context found in the tree."""
+    """Return the system prompt with cwd/platform injected, plus any LMCODE.md context."""
+    import platform as _platform
+
+    cwd = pathlib.Path.cwd().as_posix()
+    plat = f"{_platform.system()} {_platform.release()}"
+    base = _BASE_SYSTEM_PROMPT.format(cwd=cwd, platform=plat)
     extra = read_lmcode_md()
     if extra:
-        return f"{_BASE_SYSTEM_PROMPT}\n\n## Project context (LMCODE.md)\n\n{extra}"
-    return _BASE_SYSTEM_PROMPT
+        return f"{base}\n\n## Project context (LMCODE.md)\n\n{extra}"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +316,80 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
     console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
 
 
-def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = None) -> None:
-    """Print a tool result — syntax-highlighted panel for read_file, one-liner otherwise."""
+def _render_diff_sidebyside(
+    old_lines: list[str], new_lines: list[str], max_rows: int = 50
+) -> tuple[Table, int, int]:
+    """Build a side-by-side diff table (old | new) and return (table, n_added, n_removed)."""
+    # Diff palette — synthesised from Claude Code/Codex source + GitHub Primer research.
+    # Backgrounds: Codex-style warm tints (confirmed closest to Claude Code post-v2.0.70).
+    # Foreground: Catppuccin palette — softer than ODP, less harsh than pure red/green.
+    # Equal bg: subtle violet-tinted neutral to keep the panel cohesive.
+    _EQ_BG = "#1c1a2e"  # unchanged lines — violet-tinted neutral
+    _DEL_FG = "#f38ba8"  # Catppuccin Mocha rose — warm, not harsh
+    _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon (Claude Code style)
+    _ADD_FG = "#a6e3a1"  # Catppuccin Mocha green — soft, clearly "added"
+    _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
+    _SEP = Text("│", style=f"dim {ACCENT}")
+
+    table = Table(box=None, padding=(0, 1), show_header=False, expand=True)
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+    table.add_column(width=1, no_wrap=True)  # separator
+    table.add_column(ratio=1, no_wrap=True, overflow="fold")
+
+    added = removed = rows = 0
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+
+    def _row(left: Text, right: Text) -> None:
+        table.add_row(left, _SEP, right)
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if rows >= max_rows:
+            break
+        if op == "equal":
+            for old, new in zip(old_lines[i1:i2], new_lines[j1:j2], strict=False):
+                _row(
+                    Text(old.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                    Text(new.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+                )
+                rows += 1
+        elif op == "replace":
+            old_chunk = old_lines[i1:i2]
+            new_chunk = new_lines[j1:j2]
+            for i in range(max(len(old_chunk), len(new_chunk))):
+                _row(
+                    Text(
+                        old_chunk[i].rstrip("\n") if i < len(old_chunk) else "",
+                        style=f"{_DEL_FG} on {_DEL_BG}",
+                    ),
+                    Text(
+                        new_chunk[i].rstrip("\n") if i < len(new_chunk) else "",
+                        style=f"{_ADD_FG} on {_ADD_BG}",
+                    ),
+                )
+                rows += 1
+            removed += i2 - i1
+            added += j2 - j1
+        elif op == "delete":
+            for line in old_lines[i1:i2]:
+                _row(Text(line.rstrip("\n"), style=f"{_DEL_FG} on {_DEL_BG}"), Text(""))
+                rows += 1
+            removed += i2 - i1
+        elif op == "insert":
+            for line in new_lines[j1:j2]:
+                _row(Text(""), Text(line.rstrip("\n"), style=f"{_ADD_FG} on {_ADD_BG}"))
+                rows += 1
+            added += j2 - j1
+
+    return table, added, removed
+
+
+def _print_tool_result(
+    name: str,
+    result: str,
+    args: dict[str, Any] | None = None,
+    old_content: str | None = None,
+) -> None:
+    """Print a tool result — syntax panel for read_file/write_file, one-liner otherwise."""
     if name == "read_file" and args:
         path = args.get("path", "")
         if path and result and not result.startswith("error:"):
@@ -247,12 +401,67 @@ def _print_tool_result(name: str, result: str, args: dict[str, Any] | None = Non
             syn = Syntax(
                 preview + suffix,
                 ext or "text",
-                theme="monokai",
+                theme="one-dark",
                 line_numbers=True,
             )
             short = pathlib.Path(path).name
             title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
-            console.print(_Panel(syn, title=title, border_style=BORDER, padding=(0, 1)))
+            console.print(
+                _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+            )
+            return
+    if name == "write_file" and args:
+        path = args.get("path", "")
+        new_content = args.get("content", "")
+        if path and new_content and not result.startswith("error:"):
+            short = pathlib.Path(path).name
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            if old_content is None:
+                lines = new_content.splitlines()
+                n = min(len(lines), 30)
+                preview = "\n".join(lines[:n])
+                more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+                body: Any = Syntax(
+                    preview + more, ext or "text", theme="one-dark", line_numbers=True
+                )
+                title = f"[{TEXT_MUTED}]{short}[/]  [{SUCCESS}]new file[/]"
+            else:
+                old_ls = old_content.splitlines(keepends=True)
+                new_ls = new_content.splitlines(keepends=True)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                if n_added == 0 and n_removed == 0:
+                    console.print(
+                        f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
+                    )
+                    return
+                parts = []
+                if n_added:
+                    parts.append(f"[{SUCCESS}]+{n_added}[/]")
+                if n_removed:
+                    parts.append(f"[{ERROR}]-{n_removed}[/]")
+                title = f"[{TEXT_MUTED}]{short}[/]  {' '.join(parts)}"
+                body = diff_table
+            console.print(
+                _Panel(body, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+            )
+            return
+    if name == "run_shell" and args:
+        cmd = args.get("command", "")
+        if cmd:
+            lines = result.splitlines()
+            n = min(len(lines), 30)
+            out_text = "\n".join(lines[:n])
+            more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+            in_grid = Table.grid(padding=(0, 1))
+            in_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
+            in_grid.add_column(style=TEXT_SECONDARY)
+            in_grid.add_row("IN", _escape(cmd))
+            out_grid = Table.grid(padding=(0, 1))
+            out_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
+            out_grid.add_column(style=TEXT_MUTED)
+            out_grid.add_row("OUT", _escape(out_text + more))
+            content = RenderGroup(in_grid, Rule(style=f"dim {ACCENT}"), out_grid)
+            console.print(_Panel(content, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1)))
             return
     preview = result[:100].replace("\n", " ")
     suffix = "…" if len(result) > 100 else ""
@@ -266,11 +475,23 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
     functools.wraps so the LM Studio SDK can still build the correct JSON schema.
     """
 
+    _params = list(inspect.signature(fn).parameters.keys())
+
     @functools.wraps(fn)
     def _wrapper(*args: Any, **kwargs: Any) -> str:
-        _print_tool_call(fn.__name__, kwargs)
+        # Merge positional args into a named dict so panels can look up by name.
+        merged = {_params[i]: v for i, v in enumerate(args)}
+        merged.update(kwargs)
+        _print_tool_call(fn.__name__, merged)
+        old_content: str | None = None
+        if fn.__name__ == "write_file":
+            try:
+                p = pathlib.Path(merged.get("path", ""))
+                old_content = p.read_text(encoding="utf-8") if p.exists() else None
+            except Exception:
+                pass
         result = fn(*args, **kwargs)
-        _print_tool_result(fn.__name__, str(result), kwargs)
+        _print_tool_result(fn.__name__, str(result), merged, old_content=old_content)
         return result
 
     return _wrapper
@@ -821,13 +1042,39 @@ class Agent:
                         Spinner(_SPINNER, text=" thinking.", style=ACCENT),
                     )
                     self._raw_history.append(("user", stripped))
+                    _interrupted = False
                     with Live(
                         initial,
                         transient=True,
                         console=console,
                         refresh_per_second=10,
                     ) as live:
-                        response, stats = await self._run_turn(model, user_input, live=live)
+                        try:
+                            response, stats = await self._run_turn(model, user_input, live=live)
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            # Python 3.12 asyncio raises CancelledError (not
+                            # KeyboardInterrupt) inside coroutines on Ctrl+C.
+                            # Uncancel the task so the loop does not re-raise.
+                            _task = asyncio.current_task()
+                            if _task is not None and _task.cancelling() > 0:
+                                _task.uncancel()
+                            _interrupted = True
+
+                    if _interrupted:
+                        # Roll back: remove the user message added above and
+                        # rebuild the chat so no orphaned message remains.
+                        self._raw_history.pop()
+                        self._chat = self._init_chat()
+                        for _role, _msg in self._raw_history:
+                            if _role == "user":
+                                self._chat.add_user_message(_msg)
+                            else:
+                                self._chat.add_assistant_response(_msg)
+                        console.print(f"\n[{TEXT_MUTED}]^C[/]")
+                        console.print(f"[italic {TEXT_MUTED}]interrupted[/]")
+                        console.print(Rule(style=f"dim {ACCENT}"))
+                        continue
+
                     self._raw_history.append(("assistant", response))
 
                     msg = Text()

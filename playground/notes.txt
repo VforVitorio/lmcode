@@ -1,0 +1,9 @@
+Playground notes
+================
+
+This is a plain text file for basic read/write tests.
+
+Ideas to try:
+- Ask lmcode to summarise this file
+- Ask it to add a new section
+- Ask it to translate it to Spanish
