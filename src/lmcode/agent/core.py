@@ -957,7 +957,8 @@ class Agent:
         session = _make_session(cycle_mode=_cycle_mode)
 
         try:
-            async with lms.AsyncClient() as client:
+            lms_host = f"ws://{settings.lmstudio.host}:{settings.lmstudio.port}"
+            async with lms.AsyncClient(lms_host) as client:
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
                 self._model_ref = model
