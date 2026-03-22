@@ -8,6 +8,7 @@ import functools
 import inspect
 import pathlib
 import random
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -54,6 +55,33 @@ from lmcode.ui.status import (
     build_status_line,
     next_mode,
 )
+
+
+class _FilterSDKNoise:
+    """Transparent stdout wrapper that silences LM Studio SDK WebSocket noise.
+
+    After a Ctrl+C interrupt the SDK's background WebSocket thread keeps delivering
+    fragments to the cancelled channel and prints JSON lines containing
+    "already closed channel" directly to stdout (not via Python logging).
+    All other writes pass through unchanged.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        if "already closed channel" not in text:
+            self._stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+sys.stdout = _FilterSDKNoise(sys.stdout)  # type: ignore[assignment]
 
 console = Console()
 
@@ -1012,7 +1040,13 @@ class Agent:
                     ) as live:
                         try:
                             response, stats = await self._run_turn(model, user_input, live=live)
-                        except KeyboardInterrupt:
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            # Python 3.12 asyncio raises CancelledError (not
+                            # KeyboardInterrupt) inside coroutines on Ctrl+C.
+                            # Uncancel the task so the loop does not re-raise.
+                            _task = asyncio.current_task()
+                            if _task is not None and _task.cancelling() > 0:
+                                _task.uncancel()
                             _interrupted = True
 
                     if _interrupted:
