@@ -1,0 +1,6 @@
+{
+  "project": "lmcode",
+  "language": "python",
+  "tools": ["read_file", "write_file", "run_shell"],
+  "tags": ["local", "agent", "cli"]
+}
