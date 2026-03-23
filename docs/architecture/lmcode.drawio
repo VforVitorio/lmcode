@@ -1,0 +1,479 @@
+<mxfile host="app.diagrams.net" version="21.0.0">
+
+  <!-- ================================================================
+       PAGE 1 — System Architecture (lmcode vs lms mental model)
+       ================================================================ -->
+  <diagram id="sysarch" name="System Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="2" value="lmcode — System Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="285" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- USER -->
+        <mxCell id="3" value="&lt;b&gt;Developer / User&lt;/b&gt;&lt;br/&gt;types requests · reviews diffs · approves tool calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="335" y="80" width="500" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- LMCODE (main box) -->
+        <mxCell id="4" value="&lt;b&gt;lmcode&lt;/b&gt; — agentic coding layer" style="swimlane;fontSize=14;fontStyle=1;fillColor=#f3e8ff;strokeColor=#9673a6;startSize=35;" vertex="1" parent="1">
+          <mxGeometry x="185" y="200" width="800" height="190" as="geometry" />
+        </mxCell>
+
+        <mxCell id="5" value="Agent loop (model.act)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="4">
+          <mxGeometry x="20" y="55" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="Tool runner&lt;br/&gt;(read · write · shell · search)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="4">
+          <mxGeometry x="200" y="55" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="UI layer&lt;br/&gt;(diff blocks · panels · spinner)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="4">
+          <mxGeometry x="390" y="55" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="LMCODE.md · permission modes&lt;br/&gt;plugins (pluggy) · MCP client (planned)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="4">
+          <mxGeometry x="580" y="55" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="9" value="lms bridge (planned) — subprocess calls with graceful degradation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;dashed=1;" vertex="1" parent="4">
+          <mxGeometry x="200" y="125" width="380" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- LMS CLI -->
+        <mxCell id="10" value="&lt;b&gt;lms CLI&lt;/b&gt; (ships with LM Studio)&lt;br/&gt;model download · load/unload&lt;br/&gt;server start/stop · log streaming" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="185" y="460" width="310" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- LM STUDIO SDK -->
+        <mxCell id="11" value="&lt;b&gt;LM Studio Python SDK&lt;/b&gt;&lt;br/&gt;lmstudio.AsyncClient&lt;br/&gt;model.act() · model.respond()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="675" y="460" width="310" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- LM STUDIO ENGINE -->
+        <mxCell id="12" value="&lt;b&gt;LM Studio&lt;/b&gt; — inference engine&lt;br/&gt;model weights · token generation · WebSocket server" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="335" y="620" width="500" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: User → lmcode -->
+        <mxCell id="13" value="requests" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" source="3" target="4" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: lmcode → lms CLI (dashed subprocess) -->
+        <mxCell id="14" value="subprocess calls&lt;br/&gt;(lms ps · lms log · lms get)" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#d79b00;fontColor=#d79b00;" edge="1" source="4" target="10" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: lmcode → SDK -->
+        <mxCell id="15" value="lmstudio SDK&lt;br/&gt;(async, main loop)" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;" edge="1" source="4" target="11" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: lms CLI → LM Studio -->
+        <mxCell id="16" value="" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#d6b656;" edge="1" source="10" target="12" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: SDK → LM Studio -->
+        <mxCell id="17" value="WebSocket" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;" edge="1" source="11" target="12" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="18" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br/&gt;━━  direct / SDK call&lt;br/&gt;╌╌  subprocess (optional, degrades gracefully)" style="text;html=1;strokeColor=#cccccc;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="20" y="620" width="270" height="70" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <!-- ================================================================
+       PAGE 2 — Agent Loop (execution flow)
+       ================================================================ -->
+  <diagram id="agentloop" name="Agent Loop">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="2" value="Agent Loop — Execution Flow" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="285" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- START -->
+        <mxCell id="3" value="lmcode chat" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="80" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- cli/chat.py -->
+        <mxCell id="4" value="cli/chat.py&lt;br/&gt;probe LM Studio · print banner&lt;br/&gt;call run_chat(model_id)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="455" y="170" width="250" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Agent.run() - prompt loop -->
+        <mxCell id="5" value="Agent.run()&lt;br/&gt;connect AsyncClient · resolve model&lt;br/&gt;compute max_file_bytes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="455" y="275" width="250" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- PROMPT LOOP START -->
+        <mxCell id="6" value="PromptSession.prompt_async()&lt;br/&gt;(prompt_toolkit — Tab, history, autocomplete)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="380" width="320" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Slash command? -->
+        <mxCell id="7" value="slash command?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="480" y="470" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Handle slash -->
+        <mxCell id="8" value="_handle_slash()&lt;br/&gt;/help /compact /tokens…" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="770" y="480" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- _run_turn() -->
+        <mxCell id="9" value="Agent._run_turn()&lt;br/&gt;add user message · wrap tools&lt;br/&gt;start keepalive spinner task" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="455" y="575" width="250" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- model.act() -->
+        <mxCell id="10" value="&lt;b&gt;model.act()&lt;/b&gt; — LM Studio SDK&lt;br/&gt;sends prompt · receives stream&lt;br/&gt;handles tool loop internally" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="455" y="680" width="250" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- tool call decision -->
+        <mxCell id="11" value="tool call in response?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="480" y="790" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Execute tool -->
+        <mxCell id="12" value="_wrap_tool_verbose()&lt;br/&gt;_print_tool_call()&lt;br/&gt;execute tool fn&lt;br/&gt;_print_tool_result()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="770" y="795" width="175" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Final response -->
+        <mxCell id="13" value="final response text&lt;br/&gt;(no more tool calls)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="160" y="800" width="175" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Print response + stats -->
+        <mxCell id="14" value="print response (ACCENT_BRIGHT)&lt;br/&gt;print stats line (↑ ↓ tok/s)&lt;br/&gt;check context window % warning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="140" y="690" width="235" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- _on_message callback note -->
+        <mxCell id="15" value="_on_message callback&lt;br/&gt;updates spinner label:&lt;br/&gt;thinking → working → tool /path → finishing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="770" y="680" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows -->
+        <mxCell id="20" edge="1" source="3" target="4" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="21" edge="1" source="4" target="5" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="22" edge="1" source="5" target="6" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="23" edge="1" source="6" target="7" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="24" value="yes" edge="1" source="7" target="8" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="25" value="no" edge="1" source="7" target="9" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="26" edge="1" source="9" target="10" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="27" edge="1" source="10" target="11" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="28" value="yes" edge="1" source="11" target="12" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="29" value="no" edge="1" source="11" target="13" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="30" edge="1" source="13" target="14" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- tool result back to model.act loop -->
+        <mxCell id="31" value="result returned to SDK" edge="1" source="12" target="10" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="955" y="835" />
+              <mxPoint x="955" y="715" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- slash → back to prompt -->
+        <mxCell id="32" value="back to prompt" edge="1" source="8" target="6" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="955" y="505" />
+              <mxPoint x="955" y="407" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- stats → back to prompt -->
+        <mxCell id="33" value="back to prompt" edge="1" source="14" target="6" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="80" y="725" />
+              <mxPoint x="80" y="407" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- _on_message note arrow -->
+        <mxCell id="34" edge="1" source="15" target="10" parent="1" style="dashed=1;strokeColor=#999999;endArrow=none;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <!-- ================================================================
+       PAGE 3 — lms Integration Points
+       ================================================================ -->
+  <diagram id="lmsintegration" name="lms Integration">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="2" value="lms CLI Integration Points" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="285" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- lmcode box -->
+        <mxCell id="3" value="&lt;b&gt;lmcode&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="485" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- lms bridge module (planned) -->
+        <mxCell id="4" value="&lt;b&gt;lmcode/lms_bridge.py&lt;/b&gt; (planned)&lt;br/&gt;shutil.which('lms') check&lt;br/&gt;graceful degradation when absent&lt;br/&gt;timeout + error handling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="435" y="190" width="300" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- lms CLI -->
+        <mxCell id="5" value="&lt;b&gt;lms CLI&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="485" y="340" width="200" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Integration point 1: startup banner -->
+        <mxCell id="6" value="&lt;b&gt;1. Startup banner enrichment&lt;/b&gt; (issue #76)&lt;br/&gt;Command: lms ps --json&lt;br/&gt;Returns: identifier, architecture, sizeBytes, contextLength&lt;br/&gt;Used in: cli/chat.py _probe_lmstudio()&lt;br/&gt;Result: '● Qwen2.5-Coder · llama · 4.5 GB · 32k ctx'" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="30" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Integration point 2: /log command -->
+        <mxCell id="7" value="&lt;b&gt;2. /log slash command&lt;/b&gt; (issue #77)&lt;br/&gt;Command: lms log stream --source model --filter input,output --json&lt;br/&gt;Returns: NDJSON stream of prompt + response tokens&lt;br/&gt;Used in: Agent._handle_slash() '/log'&lt;br/&gt;Result: shows exact prompt the agent sends" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="430" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Integration point 3: startup recovery -->
+        <mxCell id="8" value="&lt;b&gt;3. Startup recovery&lt;/b&gt; (issue #78)&lt;br/&gt;Commands: lms get &lt;model&gt;  →  lms load &lt;model&gt;&lt;br/&gt;Triggered when: lms ps returns empty list&lt;br/&gt;Used in: cli/chat.py when no model loaded&lt;br/&gt;Result: guided onboarding instead of error" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="830" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Integration point 4: lmcode run (future) -->
+        <mxCell id="9" value="&lt;b&gt;4. lmcode run (CI/headless)&lt;/b&gt; (future)&lt;br/&gt;Commands: lms server start → run task → lms server stop&lt;br/&gt;Triggered when: lmcode run '&lt;task&gt;' in CI pipeline&lt;br/&gt;Used in: cli/run.py (not yet implemented)&lt;br/&gt;Result: fully scriptable, no LM Studio GUI needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="230" y="620" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Integration point 5: /model switch (future) -->
+        <mxCell id="10" value="&lt;b&gt;5. /model mid-session switch&lt;/b&gt; (issue #19)&lt;br/&gt;Commands: lms ls --json  →  lms load &lt;model&gt;&lt;br/&gt;Triggered when: user runs /model in chat&lt;br/&gt;Used in: Agent._handle_slash() '/model'&lt;br/&gt;Result: switch model without restarting session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="630" y="620" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- LEGEND -->
+        <mxCell id="11" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br/&gt;Blue = planned for v0.7.0&lt;br/&gt;Red dashed = future / icebox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#cccccc;fontSize=10;fontColor=#333333;align=left;" vertex="1" parent="1">
+          <mxGeometry x="30" y="190" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows -->
+        <mxCell id="12" edge="1" source="3" target="4" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="13" edge="1" source="4" target="5" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="lms ps --json" edge="1" source="5" target="6" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="lms log stream" edge="1" source="5" target="7" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="lms get / lms load" edge="1" source="5" target="8" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="lms server start/stop" edge="1" source="5" target="9" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="lms ls / lms load" edge="1" source="5" target="10" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <!-- ================================================================
+       PAGE 4 — Module Map (Python package structure + import graph)
+       ================================================================ -->
+  <diagram id="modulemap" name="Module Map">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="2" value="Module Map — import dependencies" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="285" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- cli layer -->
+        <mxCell id="3" value="cli/app.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="90" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="cli/chat.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="90" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="cli/config_cmd.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="90" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="cli/run.py&lt;br/&gt;&lt;i&gt;(stub)&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="590" y="90" width="130" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- agent layer -->
+        <mxCell id="7" value="agent/core.py&lt;br/&gt;Agent · run_chat&lt;br/&gt;_wrap_tool_verbose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="260" y="200" width="160" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="agent/_display.py&lt;br/&gt;console · SLASH_COMMANDS&lt;br/&gt;all _print_* / _render_*" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="320" width="175" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="agent/_noise.py&lt;br/&gt;_FilterSDKNoise&lt;br/&gt;_FilteredLastResort" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="255" y="320" width="175" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="10" value="agent/_prompt.py&lt;br/&gt;make_session()&lt;br/&gt;Tab · autocomplete" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="450" y="320" width="175" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- tools layer -->
+        <mxCell id="11" value="tools/registry.py&lt;br/&gt;@register · get_all()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="200" width="155" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="tools/filesystem.py&lt;br/&gt;read_file · write_file&lt;br/&gt;list_files" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="320" width="145" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="tools/shell.py&lt;br/&gt;run_shell" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="820" y="320" width="120" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="tools/search.py&lt;br/&gt;search_code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="955" y="320" width="120" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- config layer -->
+        <mxCell id="15" value="config/settings.py&lt;br/&gt;get_settings() singleton&lt;br/&gt;TOML + env vars" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="460" width="175" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="config/lmcode_md.py&lt;br/&gt;find_lmcode_md()&lt;br/&gt;read_lmcode_md()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="255" y="460" width="175" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="config/paths.py&lt;br/&gt;config_dir()&lt;br/&gt;sessions_dir()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="450" y="460" width="155" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- ui layer -->
+        <mxCell id="18" value="ui/colors.py&lt;br/&gt;ACCENT · ERROR · SUCCESS…" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="660" y="460" width="175" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="ui/status.py&lt;br/&gt;build_prompt() · next_mode()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="460" width="175" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- lms bridge (planned) -->
+        <mxCell id="20" value="lms_bridge.py&lt;br/&gt;&lt;i&gt;(planned — issue #79)&lt;/i&gt;&lt;br/&gt;wraps lms subprocess calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;dashed=1;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="660" y="580" width="175" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="21" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br/&gt;Blue = CLI layer&lt;br/&gt;Purple = Agent layer&lt;br/&gt;Yellow = Tools&lt;br/&gt;Green = Config&lt;br/&gt;Red = UI&lt;br/&gt;Orange dashed = planned" style="text;html=1;strokeColor=#cccccc;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="30" y="580" width="160" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows -->
+        <!-- cli/chat.py → agent/core.py -->
+        <mxCell id="30" edge="1" source="4" target="7" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → _display -->
+        <mxCell id="31" edge="1" source="7" target="8" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → _noise -->
+        <mxCell id="32" edge="1" source="7" target="9" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → _prompt -->
+        <mxCell id="33" edge="1" source="7" target="10" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → tools/registry -->
+        <mxCell id="34" edge="1" source="7" target="11" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → filesystem (noqa F401 import) -->
+        <mxCell id="35" value="noqa F401" edge="1" source="7" target="12" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;fontStyle=2;fontSize=9;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- filesystem → registry -->
+        <mxCell id="36" value="@register" edge="1" source="12" target="11" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- shell → registry -->
+        <mxCell id="37" value="@register" edge="1" source="13" target="11" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- search → registry -->
+        <mxCell id="38" value="@register" edge="1" source="14" target="11" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → config/settings -->
+        <mxCell id="39" edge="1" source="7" target="15" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → lmcode_md -->
+        <mxCell id="40" edge="1" source="7" target="16" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- _display → ui/colors -->
+        <mxCell id="41" edge="1" source="8" target="18" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → ui/status -->
+        <mxCell id="42" edge="1" source="7" target="19" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- core → lms_bridge (planned) -->
+        <mxCell id="43" edge="1" source="7" target="20" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d79b00;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- cli/config_cmd → settings -->
+        <mxCell id="44" edge="1" source="5" target="15" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+</mxfile>
