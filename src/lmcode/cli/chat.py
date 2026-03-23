@@ -10,7 +10,12 @@ from rich.text import Text
 from lmcode import __version__
 from lmcode.agent.core import run_chat
 from lmcode.config.settings import get_settings
-from lmcode.lms_bridge import list_loaded_models
+from lmcode.lms_bridge import (
+    is_available,
+    list_downloaded_models,
+    list_loaded_models,
+    suggest_load_commands,
+)
 from lmcode.ui.banner import print_banner
 from lmcode.ui.colors import ERROR, TEXT_MUTED, WARNING
 
@@ -67,10 +72,35 @@ def _exit_no_server(base_url: str) -> None:
 
 
 def _exit_no_model() -> None:
-    """Print a clear startup error when no model is loaded in LM Studio."""
+    """Print a guided startup error with recovery commands when no model is loaded.
+
+    If ``lms`` is on PATH, checks for already-downloaded models and suggests
+    the minimal ``lms load`` command.  Falls back to ``lms get`` + ``lms load``
+    when nothing is downloaded yet.  Degrades gracefully to a plain message
+    when ``lms`` is not installed.
+    """
     _console.print(f"[{WARNING}]no model loaded[/]")
-    msg = f"[{TEXT_MUTED}]  → In LM Studio, load a model first, then run lmcode again[/]\n"
-    _console.print(msg)
+
+    if is_available():
+        downloaded = list_downloaded_models()
+        if downloaded:
+            first = downloaded[0]
+            model_id = first.identifier or first.path.split("/")[-1].split("\\")[-1]
+            _console.print(
+                f"[{TEXT_MUTED}]  → {len(downloaded)} model(s) downloaded — load one with:[/]"
+            )
+            _console.print(f"  [bold]lms load {model_id}[/]")
+            _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
+        else:
+            _console.print(f"[{TEXT_MUTED}]  → no models downloaded yet — get and load one:[/]")
+            for cmd in suggest_load_commands():
+                _console.print(f"  [bold]{cmd}[/]")
+            _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
+    else:
+        _console.print(
+            f"[{TEXT_MUTED}]  → In LM Studio, load a model first, then run lmcode again[/]\n"
+        )
+
     raise typer.Exit(1)
 
 
