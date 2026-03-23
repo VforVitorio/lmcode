@@ -117,7 +117,7 @@ def _exit_no_model() -> None:
         downloaded = list_downloaded_models()
         if downloaded:
             first = downloaded[0]
-            model_id = first.identifier or first.path.split("/")[-1].split("\\")[-1]
+            model_id = first.load_name()
             _console.print(
                 f"[{TEXT_MUTED}]  → {len(downloaded)} model(s) downloaded — load one with:[/]"
             )

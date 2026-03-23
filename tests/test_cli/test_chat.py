@@ -123,7 +123,7 @@ def test_exit_no_model_lms_available_with_downloads(capsys: pytest.CaptureFixtur
     assert "lms get" not in out
 
 
-def test_exit_no_model_uses_filename_when_no_identifier(
+def test_exit_no_model_uses_filename_without_extension_when_no_identifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     dm = DownloadedModel(path="/models/my-model.gguf", identifier=None)
@@ -134,7 +134,9 @@ def test_exit_no_model_uses_filename_when_no_identifier(
     ):
         _exit_no_model()
     out = capsys.readouterr().out
-    assert "my-model.gguf" in out
+    # .gguf extension must be stripped so the suggested lms load command is valid
+    assert "my-model" in out
+    assert ".gguf" not in out
 
 
 def test_exit_no_model_always_exits_1() -> None:
