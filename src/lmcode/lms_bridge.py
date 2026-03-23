@@ -170,6 +170,114 @@ def stream_model_log() -> subprocess.Popen[str] | None:
         return None
 
 
+def load_model(
+    identifier: str,
+    gpu: str = "auto",
+    context_length: int | None = None,
+) -> bool:
+    """Load a model into LM Studio via ``lms load``.
+
+    Runs ``lms load <identifier> --yes --gpu=<gpu>`` and waits up to 120 seconds
+    for the process to complete (loading large models takes time).
+
+    Args:
+        identifier: Model identifier as shown by ``lms ls``.
+        gpu: GPU offload strategy — ``"auto"``, ``"max"``, or a float string
+            between ``"0.0"`` and ``"1.0"``.
+        context_length: Optional override for the model's context window.
+
+    Returns:
+        ``True`` if ``lms load`` exited with code 0, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    cmd = ["lms", "load", identifier, "--yes", f"--gpu={gpu}"]
+    if context_length is not None:
+        cmd += ["--context-length", str(context_length)]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def unload_model(identifier: str | None = None, all_models: bool = False) -> bool:
+    """Unload a model (or all models) from LM Studio memory.
+
+    Runs ``lms unload <identifier>`` or ``lms unload --all``.
+
+    Args:
+        identifier: Model identifier to unload.  Ignored when *all_models* is
+            ``True``.
+        all_models: If ``True``, unload every loaded model (``lms unload --all``).
+
+    Returns:
+        ``True`` on success, ``False`` on any failure or when ``lms`` is absent.
+    """
+    if not is_available():
+        return False
+    if all_models:
+        cmd = ["lms", "unload", "--all"]
+    elif identifier:
+        cmd = ["lms", "unload", identifier]
+    else:
+        return False
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def server_start(port: int | None = None) -> bool:
+    """Start the LM Studio inference server via ``lms server start``.
+
+    Blocks until the server is ready (the ``lms`` process exits) or the 30-second
+    timeout is reached.
+
+    Args:
+        port: Optional port number to pass via ``--port``.
+
+    Returns:
+        ``True`` if the server started successfully, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    cmd = ["lms", "server", "start"]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def server_stop() -> bool:
+    """Stop the LM Studio inference server via ``lms server stop``.
+
+    Returns:
+        ``True`` on success, ``False`` on any failure or when ``lms`` is absent.
+    """
+    if not is_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["lms", "server", "stop"],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def suggest_load_commands(model_name: str = "Qwen2.5-Coder-7B-Instruct") -> list[str]:
     """Return the shell commands a user should run to download and load a model.
 
