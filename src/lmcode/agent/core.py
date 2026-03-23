@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
 import pathlib
 import random
 from typing import Any
@@ -36,6 +37,7 @@ from lmcode.agent._display import (
     _print_help,
     _print_history,
     _print_lmstudio_closed,
+    _print_log_event,
     _print_startup_tip,
     _print_tool_call,
     _print_tool_result,
@@ -46,6 +48,7 @@ from lmcode.agent._noise import SDK_NOISE as _SDK_NOISE  # noqa: F401 — instal
 from lmcode.agent._prompt import make_session
 from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
+from lmcode.lms_bridge import stream_model_log
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
 from lmcode.ui.colors import (
@@ -537,6 +540,52 @@ class Agent:
         console.print()
 
     # ------------------------------------------------------------------
+    # /log
+    # ------------------------------------------------------------------
+
+    async def _do_log(self) -> None:
+        """Stream lms model I/O logs until the user presses Ctrl+C.
+
+        Starts ``lms log stream`` via :func:`lms_bridge.stream_model_log` and
+        reads NDJSON lines in a thread executor so the event loop stays free.
+        Each line is parsed and rendered via :func:`_print_log_event`.
+
+        Terminates cleanly on Ctrl+C (``KeyboardInterrupt`` or
+        ``asyncio.CancelledError``) and always calls ``proc.terminate()``
+        in the ``finally`` block.
+        """
+        proc = stream_model_log()
+        if proc is None:
+            console.print(
+                f"[{TEXT_MUTED}]lms not available — install LM Studio CLI to use /log[/]\n"
+            )
+            return
+
+        console.print(f"\n[{ACCENT_BRIGHT}]lms log stream[/]  [{TEXT_MUTED}]Ctrl+C to stop[/]\n")
+        loop = asyncio.get_event_loop()
+        try:
+            while proc.stdout:
+                line: str = await loop.run_in_executor(None, proc.stdout.readline)
+                if not line:
+                    break
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    event: dict[str, object] = json.loads(stripped)
+                except json.JSONDecodeError:
+                    console.print(f"  [{TEXT_MUTED}]{stripped}[/]")
+                    continue
+                _print_log_event(event)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                task.uncancel()
+        finally:
+            proc.terminate()
+            console.print(f"\n[{TEXT_MUTED}]log stream stopped[/]\n")
+
+    # ------------------------------------------------------------------
     # _run_turn — single agent iteration
     # ------------------------------------------------------------------
 
@@ -721,6 +770,8 @@ class Agent:
                     if stripped.startswith("/"):
                         if stripped == "/compact":
                             await self._do_compact()
+                        elif stripped == "/log":
+                            await self._do_log()
                         else:
                             self._handle_slash(stripped)
                         console.print(Rule(style=f"dim {ACCENT}"))
