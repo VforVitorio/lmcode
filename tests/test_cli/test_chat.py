@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from lmcode.cli.chat import _build_model_meta, _exit_no_model
+from lmcode.cli.chat import _build_model_meta, _exit_no_model, _try_start_server
 from lmcode.lms_bridge import DownloadedModel, LoadedModel
 
 
@@ -144,3 +144,37 @@ def test_exit_no_model_always_exits_1() -> None:
     ):
         _exit_no_model()
     assert exc_info.value.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# _try_start_server (#34)
+# ---------------------------------------------------------------------------
+
+
+def test_try_start_server_returns_false_when_lms_absent() -> None:
+    with patch("lmcode.cli.chat.is_available", return_value=False):
+        assert _try_start_server() is False
+
+
+def test_try_start_server_returns_true_when_server_becomes_reachable() -> None:
+    with (
+        patch("lmcode.cli.chat.is_available", return_value=True),
+        patch("lmcode.cli.chat.server_start", return_value=True),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(True, "MyModel")),
+        patch("lmcode.cli.chat.time") as mock_time,
+    ):
+        mock_time.sleep = lambda _: None
+        result = _try_start_server()
+    assert result is True
+
+
+def test_try_start_server_returns_false_when_server_never_responds() -> None:
+    with (
+        patch("lmcode.cli.chat.is_available", return_value=True),
+        patch("lmcode.cli.chat.server_start", return_value=False),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(False, "")),
+        patch("lmcode.cli.chat.time") as mock_time,
+    ):
+        mock_time.sleep = lambda _: None
+        result = _try_start_server()
+    assert result is False

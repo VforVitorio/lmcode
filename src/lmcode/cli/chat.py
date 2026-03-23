@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import lmstudio as lms
 import typer
 from rich.console import Console
@@ -14,14 +16,21 @@ from lmcode.lms_bridge import (
     is_available,
     list_downloaded_models,
     list_loaded_models,
+    server_start,
     suggest_load_commands,
 )
 from lmcode.ui.banner import print_banner
-from lmcode.ui.colors import ERROR, TEXT_MUTED, WARNING
+from lmcode.ui.colors import ERROR, SUCCESS, TEXT_MUTED, WARNING
 
 app = typer.Typer()
 
 _console = Console()
+
+#: How long to wait for the server to become reachable after ``lms server start``.
+_SERVER_START_TIMEOUT: int = 20
+
+#: Seconds between connection retries while waiting for the server.
+_SERVER_POLL_INTERVAL: float = 1.0
 
 
 def _probe_lmstudio() -> tuple[bool, str]:
@@ -38,6 +47,29 @@ def _probe_lmstudio() -> tuple[bool, str]:
             return True, ""
     except Exception:
         return False, ""
+
+
+def _try_start_server() -> bool:
+    """Attempt to auto-start the LM Studio inference server via ``lms server start``.
+
+    Only attempted when ``lms`` is on PATH.  Polls ``_probe_lmstudio()`` every
+    second for up to ``_SERVER_START_TIMEOUT`` seconds after the start command
+    returns.
+
+    Returns:
+        ``True`` if the server becomes reachable, ``False`` otherwise.
+    """
+    if not is_available():
+        return False
+    _console.print(f"[{TEXT_MUTED}]→ starting LM Studio server via lms…[/]")
+    server_start()
+    for _ in range(_SERVER_START_TIMEOUT):
+        connected, _ = _probe_lmstudio()
+        if connected:
+            _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]LM Studio server is ready[/]")
+            return True
+        time.sleep(_SERVER_POLL_INTERVAL)
+    return False
 
 
 def _build_model_meta(identifier: str) -> str:
@@ -114,7 +146,10 @@ def chat(
     connected, detected_model = _probe_lmstudio()
 
     if not connected:
-        _exit_no_server(settings.lmstudio.base_url)
+        # Try to auto-start the server before giving up (#34).
+        connected, detected_model = _probe_lmstudio() if _try_start_server() else (False, "")
+        if not connected:
+            _exit_no_server(settings.lmstudio.base_url)
 
     if model == "auto" and not detected_model:
         _exit_no_model()
