@@ -10,6 +10,7 @@ from rich.text import Text
 from lmcode import __version__
 from lmcode.agent.core import run_chat
 from lmcode.config.settings import get_settings
+from lmcode.lms_bridge import list_loaded_models
 from lmcode.ui.banner import print_banner
 from lmcode.ui.colors import ERROR, TEXT_MUTED, WARNING
 
@@ -32,6 +33,24 @@ def _probe_lmstudio() -> tuple[bool, str]:
             return True, ""
     except Exception:
         return False, ""
+
+
+def _build_model_meta(identifier: str) -> str:
+    """Return a banner metadata string for the first loaded model matching *identifier*.
+
+    Queries ``lms ps --json`` via lms_bridge and returns a dot-separated string
+    of whichever metadata fields are available, e.g. ``"llama  ·  4.5 GB  ·  32k ctx"``.
+    Returns an empty string when lms is absent, no models are loaded, or no
+    metadata is available for the given identifier.
+    """
+    models = list_loaded_models()
+    match = next((m for m in models if m.identifier == identifier), None)
+    if match is None and models:
+        match = models[0]
+    if match is None:
+        return ""
+    parts = [p for p in [match.architecture, match.format_size(), match.format_context()] if p]
+    return "  ·  ".join(parts)
 
 
 def _exit_no_server(base_url: str) -> None:
@@ -71,5 +90,6 @@ def chat(
         _exit_no_model()
 
     display_model = detected_model if model == "auto" else model
-    print_banner(__version__, model=display_model, lmstudio_connected=True)
+    model_meta = _build_model_meta(display_model) if display_model else ""
+    print_banner(__version__, model=display_model, lmstudio_connected=True, model_meta=model_meta)
     run_chat(model_id=model)

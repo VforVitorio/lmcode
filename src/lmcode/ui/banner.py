@@ -77,6 +77,7 @@ def get_banner(
     version: str,
     model: str = "",
     lmstudio_connected: bool = False,
+    model_meta: str = "",
 ) -> Panel:
     """
     Build and return the startup banner as a Rich Panel.
@@ -85,6 +86,7 @@ def get_banner(
         version: lmcode version string
         model: loaded model name (empty = unknown)
         lmstudio_connected: whether LM Studio is reachable
+        model_meta: optional enrichment string, e.g. "llama  ·  4.5 GB  ·  32k ctx"
     """
     content = Text(justify="center", no_wrap=True)
 
@@ -109,6 +111,10 @@ def get_banner(
         content.append("  ·  ", style=BORDER)
         content.append(model, style=ACCENT)
 
+    if model_meta:
+        content.append("  ·  ", style=BORDER)
+        content.append(model_meta, style=TEXT_MUTED)
+
     content.append("  ·  ", style=BORDER)
     content.append(f"v{version}\n", style=TEXT_MUTED)
 
@@ -124,6 +130,7 @@ def _print_compact_banner(
     version: str,
     model: str,
     lmstudio_connected: bool,
+    model_meta: str = "",
 ) -> None:
     """Print a narrow-terminal-friendly banner with no Panel or ASCII art.
 
@@ -147,6 +154,9 @@ def _print_compact_banner(
     if model:
         line2.append("  ·  ", style=BORDER)
         line2.append(model, style=ACCENT)
+    if model_meta:
+        line2.append("  ·  ", style=BORDER)
+        line2.append(model_meta, style=TEXT_MUTED)
     line2.append("  ·  ", style=BORDER)
     line2.append(f"v{version}", style=TEXT_MUTED)
     console.print(line2)
@@ -156,11 +166,18 @@ def print_banner(
     version: str,
     model: str = "",
     lmstudio_connected: bool = False,
+    model_meta: str = "",
 ) -> None:
     """Print the banner to stdout.
 
     Detects terminal width and chooses between a full Panel with ASCII art
     (width >= 90) and a compact two-line fallback (width < 90).
+
+    Args:
+        version: lmcode version string
+        model: loaded model name (empty = unknown)
+        lmstudio_connected: whether LM Studio is reachable
+        model_meta: optional enrichment from lms_bridge, e.g. "llama  ·  4.5 GB  ·  32k ctx"
     """
     # Ensure stdout uses UTF-8 so Unicode block characters render correctly
     # on Windows terminals that default to cp1252.
@@ -171,6 +188,6 @@ def print_banner(
     # Full banner needs at least 70 columns; below that use the compact form.
     console = Console(legacy_windows=False, width=min(width, 100))
     if width >= 70:
-        console.print(get_banner(version, model, lmstudio_connected))
+        console.print(get_banner(version, model, lmstudio_connected, model_meta))
     else:
-        _print_compact_banner(console, version, model, lmstudio_connected)
+        _print_compact_banner(console, version, model, lmstudio_connected, model_meta)
