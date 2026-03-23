@@ -16,6 +16,7 @@ from lmcode.lms_bridge import (
     is_available,
     list_downloaded_models,
     list_loaded_models,
+    load_model,
     server_start,
     suggest_load_commands,
 )
@@ -72,6 +73,30 @@ def _try_start_server() -> bool:
     return False
 
 
+def _try_load_first_model() -> str:
+    """Auto-load the first downloaded model when none is loaded.
+
+    Called at startup when the server is reachable but no model is active.
+    If ``lms`` is on PATH and at least one model is downloaded, loads it
+    automatically and returns its identifier.  Returns an empty string on
+    any failure or when ``lms`` is unavailable.
+    """
+    if not is_available():
+        return ""
+    downloaded = list_downloaded_models()
+    if not downloaded:
+        return ""
+    first = downloaded[0]
+    name = first.load_name()
+    size = first.format_size()
+    size_str = f"  [{TEXT_MUTED}]({size})[/]" if size else ""
+    _console.print(f"[{TEXT_MUTED}]→ no model loaded — loading {name}{size_str}…[/]")
+    if not load_model(name):
+        return ""
+    _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]loaded {name}[/]")
+    return name
+
+
 def _build_model_meta(identifier: str) -> str:
     """Return a banner metadata string for the first loaded model matching *identifier*.
 
@@ -104,30 +129,27 @@ def _exit_no_server(base_url: str) -> None:
 
 
 def _exit_no_model() -> None:
-    """Print a guided startup error with recovery commands when no model is loaded.
+    """Print a guided startup error when no model could be loaded.
 
-    If ``lms`` is on PATH, checks for already-downloaded models and suggests
-    the minimal ``lms load`` command.  Falls back to ``lms get`` + ``lms load``
-    when nothing is downloaded yet.  Degrades gracefully to a plain message
+    Reached only when auto-load failed or lms is unavailable.  Shows
+    ``lms get`` commands when nothing is downloaded yet, or a plain message
     when ``lms`` is not installed.
     """
     _console.print(f"[{WARNING}]no model loaded[/]")
 
     if is_available():
         downloaded = list_downloaded_models()
-        if downloaded:
-            first = downloaded[0]
-            model_id = first.load_name()
-            _console.print(
-                f"[{TEXT_MUTED}]  → {len(downloaded)} model(s) downloaded — load one with:[/]"
-            )
-            _console.print(f"  [bold]lms load {model_id}[/]")
-            _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
-        else:
+        if not downloaded:
             _console.print(f"[{TEXT_MUTED}]  → no models downloaded yet — get and load one:[/]")
             for cmd in suggest_load_commands():
                 _console.print(f"  [bold]{cmd}[/]")
             _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
+        else:
+            # Auto-load was attempted and failed.
+            _console.print(
+                f"[{TEXT_MUTED}]  → could not load model automatically[/]\n"
+                f"[{TEXT_MUTED}]  → try manually: lms load {downloaded[0].load_name()}[/]\n"
+            )
     else:
         _console.print(
             f"[{TEXT_MUTED}]  → In LM Studio, load a model first, then run lmcode again[/]\n"
@@ -152,7 +174,10 @@ def chat(
             _exit_no_server(settings.lmstudio.base_url)
 
     if model == "auto" and not detected_model:
-        _exit_no_model()
+        # Server is up but no model is loaded — try to load one automatically (#19/#34).
+        detected_model = _try_load_first_model()
+        if not detected_model:
+            _exit_no_model()
 
     display_model = detected_model if model == "auto" else model
     model_meta = _build_model_meta(display_model) if display_model else ""

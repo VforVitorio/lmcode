@@ -7,7 +7,12 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from lmcode.cli.chat import _build_model_meta, _exit_no_model, _try_start_server
+from lmcode.cli.chat import (
+    _build_model_meta,
+    _exit_no_model,
+    _try_load_first_model,
+    _try_start_server,
+)
 from lmcode.lms_bridge import DownloadedModel, LoadedModel
 
 
@@ -78,7 +83,47 @@ def test_build_model_meta_only_architecture() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _exit_no_model — startup recovery (#78)
+# _try_load_first_model — auto-load at startup
+# ---------------------------------------------------------------------------
+
+
+def test_try_load_first_model_loads_and_returns_name(capsys: pytest.CaptureFixture[str]) -> None:
+    dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
+    with (
+        patch("lmcode.cli.chat.is_available", return_value=True),
+        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
+        patch("lmcode.cli.chat.load_model", return_value=True),
+    ):
+        result = _try_load_first_model()
+    assert result == "Qwen2.5-Coder-7B"
+    assert "loading" in capsys.readouterr().out
+
+
+def test_try_load_first_model_returns_empty_when_lms_absent() -> None:
+    with patch("lmcode.cli.chat.is_available", return_value=False):
+        assert _try_load_first_model() == ""
+
+
+def test_try_load_first_model_returns_empty_when_no_downloads() -> None:
+    with (
+        patch("lmcode.cli.chat.is_available", return_value=True),
+        patch("lmcode.cli.chat.list_downloaded_models", return_value=[]),
+    ):
+        assert _try_load_first_model() == ""
+
+
+def test_try_load_first_model_returns_empty_when_load_fails() -> None:
+    dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
+    with (
+        patch("lmcode.cli.chat.is_available", return_value=True),
+        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
+        patch("lmcode.cli.chat.load_model", return_value=False),
+    ):
+        assert _try_load_first_model() == ""
+
+
+# ---------------------------------------------------------------------------
+# _exit_no_model — last-resort error (no downloads or auto-load failed)
 # ---------------------------------------------------------------------------
 
 
@@ -105,10 +150,10 @@ def test_exit_no_model_lms_available_no_downloads(capsys: pytest.CaptureFixture[
         _exit_no_model()
     out = capsys.readouterr().out
     assert "lms get" in out
-    assert "lms load" in out
 
 
-def test_exit_no_model_lms_available_with_downloads(capsys: pytest.CaptureFixture[str]) -> None:
+def test_exit_no_model_lms_available_load_failed(capsys: pytest.CaptureFixture[str]) -> None:
+    # When downloads exist but auto-load failed, show a manual fallback command.
     dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
     with (
         patch("lmcode.cli.chat.is_available", return_value=True),
@@ -117,26 +162,7 @@ def test_exit_no_model_lms_available_with_downloads(capsys: pytest.CaptureFixtur
     ):
         _exit_no_model()
     out = capsys.readouterr().out
-    # Should suggest lms load with the known identifier, not lms get
-    assert "lms load" in out
     assert "Qwen2.5-Coder-7B" in out
-    assert "lms get" not in out
-
-
-def test_exit_no_model_uses_filename_without_extension_when_no_identifier(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    dm = DownloadedModel(path="/models/my-model.gguf", identifier=None)
-    with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
-        pytest.raises(typer.Exit),
-    ):
-        _exit_no_model()
-    out = capsys.readouterr().out
-    # .gguf extension must be stripped so the suggested lms load command is valid
-    assert "my-model" in out
-    assert ".gguf" not in out
 
 
 def test_exit_no_model_always_exits_1() -> None:
