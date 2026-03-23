@@ -1,0 +1,61 @@
+<mxfile host="app.diagrams.net" version="21.0.0">
+  <diagram id="lmsintegration" name="lms Integration">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="lms CLI Integration Points" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="285" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="&lt;b&gt;lmcode&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="485" y="80" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="&lt;b&gt;lmcode/lms_bridge.py&lt;/b&gt; (planned — issue #79)&lt;br/&gt;shutil.which('lms') check&lt;br/&gt;graceful degradation when absent&lt;br/&gt;timeout + error handling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="435" y="190" width="300" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="&lt;b&gt;lms CLI&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="485" y="340" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="&lt;b&gt;1. Startup banner enrichment&lt;/b&gt; (issue #76)&lt;br/&gt;Command: lms ps --json&lt;br/&gt;Returns: identifier, architecture, sizeBytes, contextLength&lt;br/&gt;Used in: cli/chat.py _probe_lmstudio()&lt;br/&gt;Result: '● Qwen2.5-Coder · llama · 4.5 GB · 32k ctx'" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="30" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="&lt;b&gt;2. /log slash command&lt;/b&gt; (issue #77)&lt;br/&gt;Command: lms log stream --source model --filter input,output --json&lt;br/&gt;Returns: NDJSON stream of prompt + response tokens&lt;br/&gt;Used in: Agent._handle_slash() '/log'&lt;br/&gt;Result: shows exact prompt the agent sends" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="430" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="&lt;b&gt;3. Startup recovery&lt;/b&gt; (issue #78)&lt;br/&gt;Commands: lms get &lt;model&gt;  →  lms load &lt;model&gt;&lt;br/&gt;Triggered when: lms ps returns empty list&lt;br/&gt;Used in: cli/chat.py when no model loaded&lt;br/&gt;Result: guided onboarding instead of error" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="830" y="460" width="310" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="&lt;b&gt;4. lmcode run (CI/headless)&lt;/b&gt; (future)&lt;br/&gt;Commands: lms server start → run task → lms server stop&lt;br/&gt;Triggered when: lmcode run '&lt;task&gt;' in CI pipeline&lt;br/&gt;Used in: cli/run.py (not yet implemented)&lt;br/&gt;Result: fully scriptable, no LM Studio GUI needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="230" y="620" width="310" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="10" value="&lt;b&gt;5. /model mid-session switch&lt;/b&gt; (issue #19)&lt;br/&gt;Commands: lms ls --json  →  lms load &lt;model&gt;&lt;br/&gt;Triggered when: user runs /model in chat&lt;br/&gt;Used in: Agent._handle_slash() '/model'&lt;br/&gt;Result: switch model without restarting session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="630" y="620" width="310" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br/&gt;Blue = planned for v0.7.0&lt;br/&gt;Red dashed = future / icebox" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#cccccc;fontSize=10;fontColor=#333333;align=left;" vertex="1" parent="1">
+          <mxGeometry x="30" y="190" width="200" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="12" edge="1" source="3" target="4" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="13" edge="1" source="4" target="5" parent="1" style="edgeStyle=orthogonalEdgeStyle;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="lms ps --json" edge="1" source="5" target="6" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="lms log stream" edge="1" source="5" target="7" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="lms get / lms load" edge="1" source="5" target="8" parent="1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="lms server start/stop" edge="1" source="5" target="9" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="lms ls / lms load" edge="1" source="5" target="10" parent="1" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#b85450;fontColor=#b85450;fontSize=10;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
