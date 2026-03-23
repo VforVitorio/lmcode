@@ -11,6 +11,20 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.1] - 2026-03-23
+
+### Changed
+- **`agent/core.py` split into focused submodules** — the 1 259-line monolith is now four focused files: `_noise.py` (SDK noise suppression), `_display.py` (all print/render helpers, `SLASH_COMMANDS`, diff rendering), `_prompt.py` (prompt-toolkit session factory), and a slimmer `core.py` (~820 lines). No behaviour changes.
+
+### Fixed
+- **`write_file` mixed newline unescape** — the previous guard `"\n" not in content` silently skipped unescaping when a model emitted a mix of real and literal `\n` sequences (e.g. Qwen 7B), producing syntactically invalid Python files. Guard dropped; unescape always runs when `\n` literal is present.
+
+### Tests
+- Added `tests/test_agent/test_display.py` — full coverage of `_ctx_usage_line`, `_build_stats_line`, `_format_tool_signature`, `_render_diff_sidebyside`, `_print_history`, and `SLASH_COMMANDS` structure.
+- Added `tests/test_agent/test_noise.py` — coverage of `_FilterSDKNoise` and `_FilteredLastResort` suppression logic.
+
+---
+
 ## [0.6.0] - 2026-03-22
 
 ### Fixed

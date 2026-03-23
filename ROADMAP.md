@@ -2,47 +2,53 @@
 
 This document tracks the planned direction of lmcode. It is a living document — priorities may shift as the project evolves and community feedback comes in.
 
-> Current status: **pre-MVP, active development**
+> Current status: **v0.6.1, active development** — core agent loop is production-quality; focus is now on UX polish, permission enforcement, and MCP/plugin ecosystem.
 
 ---
 
-## v0.1 — MVP: it works
-
-The goal of v0.1 is a single working thing: `lmcode chat` in a repo, with a local model doing real coding tasks.
+## v0.1 — MVP: it works ✅ (shipped)
 
 **Agent core**
-- [ ] Connect to LM Studio local server via official Python SDK
-- [ ] Agent loop using `model.act()` with tool calling
-- [ ] Streaming output to terminal in real time
-- [ ] Auto-detect running model (no manual config needed)
+- [x] Connect to LM Studio local server via official Python SDK
+- [x] Agent loop using `model.act()` with tool calling
+- [x] Auto-detect running model (no manual config needed)
+- [ ] Streaming output (tokens printed progressively) — see #56
 - [ ] `max_rounds` safety limit
 
 **Built-in tools**
-- [ ] `read_file` — read any file in the repo
-- [ ] `write_file` — write or overwrite a file
-- [ ] `list_files` — list directory contents with glob support
-- [ ] `run_shell` — execute shell commands with timeout
-- [ ] `search_code` — grep/ripgrep search across the repo
+- [x] `read_file` — read any file in the repo
+- [x] `write_file` — write or overwrite a file (with diff UI)
+- [x] `list_files` — list directory contents with glob support
+- [x] `run_shell` — execute shell commands with timeout
+- [x] `search_code` — grep/ripgrep search across the repo
 
 **CLI**
-- [ ] `lmcode chat` — interactive chat session
+- [x] `lmcode chat` — interactive chat session
+- [x] `lmcode config list/get/set`
 - [ ] `lmcode run "<task>"` — one-shot task execution
-- [ ] `lmcode --model <id>` — override which model to use
-- [ ] `--verbose` flag for debug output
-
-**Session recording**
-- [ ] Every agent action saved as JSONL event stream
-- [ ] Sessions stored in `~/.local/share/lmcode/sessions/`
-- [ ] `lmcode session list` — list past sessions
+- [ ] `lmcode --model <id>` — override model mid-session (see #19)
 
 **Config**
-- [ ] `~/.config/lmcode/config.toml` — global config
-- [ ] `LMCODE.md` — per-repo memory file (injected into system prompt)
+- [x] `~/.config/lmcode/config.toml` — global config
+- [x] `LMCODE.md` — per-repo context injected into system prompt
 
 **Packaging**
-- [ ] `pyproject.toml` with uv
-- [ ] `pipx install lmcode` works
-- [ ] CI: pytest + ruff + mypy on push
+- [x] `pyproject.toml` with uv
+- [x] CI: pytest + ruff + mypy on push
+
+---
+
+## v0.6.x — Stability & polish (current)
+
+- [x] Ctrl+C interrupt mid-generation (#69)
+- [x] Syntax-highlighted diff blocks for `write_file` (#68)
+- [x] LM Studio disconnect handled gracefully (#70)
+- [x] SDK WebSocket JSON noise suppressed
+- [x] `agent/core.py` split into focused submodules (maintainability)
+- [x] `write_file` mixed newline unescape fix (Qwen 7B compatibility)
+- [x] Full test coverage for display and noise modules
+- [ ] **Interactive permission UI** — diff + confirmation for `ask` mode (#40)
+- [ ] **Streaming Markdown** — progressive token rendering (#56)
 
 ---
 

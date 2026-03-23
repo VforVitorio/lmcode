@@ -1,40 +1,49 @@
-"""Agent core — connects the CLI to LM Studio via model.act()."""
+"""Agent core — the main agent loop connecting lmcode to LM Studio.
+
+This module is intentionally kept narrow.  Display helpers live in
+:mod:`agent._display`, prompt-toolkit session setup in :mod:`agent._prompt`,
+and SDK noise suppression in :mod:`agent._noise` (installed at import time).
+
+Public API:
+- :func:`run_chat` — synchronous entry point called by ``lmcode chat``
+- :class:`Agent` — the stateful agent that owns the LM Studio connection
+"""
 
 from __future__ import annotations
 
 import asyncio
-import difflib
 import functools
 import inspect
-import logging
 import pathlib
 import random
-import sys
-from collections.abc import Callable
 from typing import Any
 
 import lmstudio as lms
-from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
-from prompt_toolkit.auto_suggest import AutoSuggest, AutoSuggestFromHistory, Suggestion
-from prompt_toolkit.filters import Condition
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.styles import Style as PTStyle
-from rich import box
 from rich.align import Align
-from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.live import Live
-from rich.markup import escape as _escape
-from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
-from rich.syntax import Syntax
-from rich.table import Table
 from rich.text import Text
 
 from lmcode import __version__
+from lmcode.agent._display import (
+    CTX_WARN_THRESHOLD,
+    _build_stats_line,
+    _ctx_usage_line,
+    _format_tool_signature,
+    _print_connection_error,
+    _print_help,
+    _print_history,
+    _print_lmstudio_closed,
+    _print_startup_tip,
+    _print_tool_call,
+    _print_tool_result,
+    _rewrite_as_history,
+    console,
+)
+from lmcode.agent._noise import SDK_NOISE as _SDK_NOISE  # noqa: F401 — installs suppression
+from lmcode.agent._prompt import make_session
 from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
@@ -42,11 +51,8 @@ from lmcode.tools.registry import get_all
 from lmcode.ui.colors import (
     ACCENT,
     ACCENT_BRIGHT,
-    BORDER,
     ERROR,
-    SUCCESS,
     TEXT_MUTED,
-    TEXT_SECONDARY,
     WARNING,
 )
 from lmcode.ui.status import (
@@ -57,91 +63,17 @@ from lmcode.ui.status import (
     next_mode,
 )
 
-# Noise phrases emitted by the LM Studio SDK on disconnect / Ctrl+C.
-_SDK_NOISE: tuple[str, ...] = (
-    "already closed channel",
-    "Websocket failed, terminating session",
-)
+# ---------------------------------------------------------------------------
+# Spinner / tips constants
+# ---------------------------------------------------------------------------
 
+#: Rich spinner style used during model inference.
+_SPINNER: str = "circleHalves"
 
-class _FilterSDKNoise:
-    """Transparent stderr wrapper that silences LM Studio SDK WebSocket noise.
+#: Animated dot suffixes cycled in the keepalive task (every 3 ticks ≈ 0.3 s).
+_DOTS: tuple[str, ...] = (".", "..", "...")
 
-    When LM Studio closes or Ctrl+C is pressed, the SDK's background threads
-    log structured JSON lines via Python's ``logging`` module.  Records from
-    loggers with no configured handlers reach ``logging.lastResort`` which
-    writes directly to ``sys.stderr``, bypassing root-logger filters.
-    This wrapper intercepts those writes at the stream level.
-    """
-
-    def __init__(self, stream: Any) -> None:
-        self._stream = stream
-
-    def write(self, text: str) -> int:
-        if not any(s in text for s in _SDK_NOISE):
-            self._stream.write(text)
-        return len(text)
-
-    def flush(self) -> None:
-        self._stream.flush()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._stream, name)
-
-
-class _FilteredLastResort:
-    """Wraps ``logging.lastResort`` to drop SDK noise records before they reach stderr.
-
-    Records from loggers with no configured handlers bypass root-logger filters
-    and go directly to ``logging.lastResort``.  Wrapping ``lastResort.handle``
-    is the only reliable interception point for those records.
-    """
-
-    def __init__(self, original: Any) -> None:
-        self._original = original
-
-    @property
-    def level(self) -> int:
-        """Proxy the level attribute so logging internals still work."""
-        return self._original.level  # type: ignore[no-any-return]
-
-    def handle(self, record: logging.LogRecord) -> None:
-        """Drop noisy records; forward everything else to the original handler."""
-        if not any(s in record.getMessage() for s in _SDK_NOISE):
-            self._original.handle(record)
-
-
-# Replace logging.lastResort so SDK noise never reaches stderr via the logging path.
-logging.lastResort = _FilteredLastResort(logging.lastResort)  # type: ignore[assignment]
-# Belt-and-suspenders: also wrap sys.stderr for any direct writes.
-sys.stderr = _FilterSDKNoise(sys.stderr)
-
-console = Console()
-
-
-def _rewrite_as_history(text: str) -> None:
-    """Overwrite the just-submitted prompt line with a dimmed history entry.
-
-    Uses ANSI cursor-up + clear-line so the full '● lmcode (model) [mode] ›'
-    prompt is replaced by a minimal muted '›  text' style, keeping the
-    scrollback visually uncluttered.  Assumes the input fit on a single line,
-    which is true for any terminal ≥ 80 cols and messages under ~35 chars.
-    """
-    console.file.write("\x1b[1A\r\x1b[2K")
-    console.file.flush()
-    row = Text()
-    row.append("  ›  ", style=TEXT_MUTED)
-    row.append(text, style=f"dim {TEXT_MUTED}")
-    console.print(row)
-
-
-# Spinner style used for the thinking indicator.  Configurable via UISettings.
-_SPINNER = "circleHalves"
-
-# Animated dot suffixes cycled in the keepalive task (every 3 ticks ≈ 0.3 s).
-_DOTS = (".", "..", "...")
-
-# Rotating tips shown below the spinner during model inference.
+#: Rotating tips shown below the spinner during model inference.
 _TIPS: list[str] = [
     "use /verbose to hide tool calls",
     "Tab cycles ask → auto → strict mode",
@@ -152,6 +84,13 @@ _TIPS: list[str] = [
     "run lmcode --help for all CLI flags",
     "/stats toggles the token count display",
 ]
+
+#: Number of keepalive ticks between tip rotations (1 tick = 100 ms → ≈ 8 s).
+_TIP_ROTATE_TICKS: int = 80
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
 
 _BASE_SYSTEM_PROMPT = """\
 You are lmcode, a coding agent. You have NO built-in knowledge of the
@@ -193,129 +132,13 @@ Shell: bash
    not repeat or reprint them. One or two sentences of summary is enough.
 """
 
-# ---------------------------------------------------------------------------
-# Slash commands
-# ---------------------------------------------------------------------------
-
-_SLASH_COMMANDS: list[tuple[str, str]] = [
-    ("/help", "Show this help message"),
-    ("/clear", "Clear conversation history"),
-    ("/compact", "Summarise history to free context space"),
-    ("/mode [ask|auto|strict]", "Show or change the permission mode"),
-    ("/model", "Show the current model"),
-    ("/verbose", "Toggle verbose mode (show tool calls and results)"),
-    ("/tips", "Toggle rotating tips shown during thinking"),
-    ("/stats", "Toggle token stats shown after each response"),
-    ("/tokens", "Show session-wide token usage totals"),
-    ("/hide-model", "Toggle model name visibility in the prompt"),
-    ("/tools", "List all available tools with their signatures"),
-    ("/history [N]", "Show last N conversation turns (default 5)"),
-    ("/status", "Show current session state"),
-    ("/version", "Show the running lmcode version"),
-    ("/exit", "Exit lmcode"),
-]
-
-
-# Rotate tips every N poll ticks inside _run_turn (1 tick = 100 ms).
-_TIP_ROTATE_TICKS: int = 80  # ≈ 8 seconds per tip
-
-# Context window usage indicator
-_CTX_ARCS: list[str] = ["○", "◔", "◑", "◕", "●"]
-_CTX_WARN_THRESHOLD: float = 0.80
-
-
-def _ctx_usage_line(used: int, total: int) -> str:
-    """Return a compact '◑ 48%  (15.4k / 32k tokens)' string.
-
-    *used* and *total* are token counts. Returns an empty string when
-    *total* is zero or unknown.
-    """
-    if not total:
-        return ""
-    pct = min(used / total, 1.0)
-    arc = _CTX_ARCS[min(int(pct * len(_CTX_ARCS)), len(_CTX_ARCS) - 1)]
-
-    def _k(n: int) -> str:
-        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
-
-    return f"{arc} {pct:.0%}  ({_k(used)} / {_k(total)} tok)"
-
-
-def _print_help() -> None:
-    """Print the slash-command reference table.
-
-    Uses rich.Text per row so square brackets in command signatures are
-    treated as literal characters, not Rich markup tags.
-    """
-    console.print(f"\n[{ACCENT_BRIGHT}]in-session commands[/]")
-    for cmd, desc in _SLASH_COMMANDS:
-        row = Text()
-        row.append(f"  {cmd:<30}", style=TEXT_MUTED)
-        row.append(desc)
-        console.print(row)
-    footer = Text()
-    footer.append(
-        "\n  run lmcode --help outside the session for CLI subcommands and flags",
-        style=TEXT_MUTED,
-    )
-    console.print(footer)
-    console.print()
-
-
-def _print_startup_tip() -> None:
-    """Print a styled tip rule shown once at session start."""
-    tip = "Tab cycles mode  ·  /help for commands  ·  /verbose to hide tool calls"
-    console.print(Rule(tip, style=f"dim {ACCENT}"))
-    console.print()
-
-
-def _format_tool_signature(fn: Callable[..., Any]) -> str:
-    """Return a compact signature string for a tool callable.
-
-    Format: 'param: type = default, ...' with return annotation if present.
-    Uses inspect.signature so the output reflects the actual function parameters.
-    """
-    sig = inspect.signature(fn)
-    params: list[str] = []
-    for name, param in sig.parameters.items():
-        annotation = (
-            param.annotation.__name__
-            if hasattr(param.annotation, "__name__")
-            else str(param.annotation)
-            if param.annotation is not inspect.Parameter.empty
-            else ""
-        )
-        if param.default is not inspect.Parameter.empty:
-            default_repr = repr(param.default)
-            part = (
-                f"{name}: {annotation} = {default_repr}"
-                if annotation
-                else f"{name} = {default_repr}"
-            )
-        else:
-            part = f"{name}: {annotation}" if annotation else name
-        params.append(part)
-    param_str = ", ".join(params)
-    ret = sig.return_annotation
-    ret_str = (
-        ret.__name__
-        if hasattr(ret, "__name__")
-        else str(ret)
-        if ret is not inspect.Parameter.empty
-        else ""
-    )
-    if ret_str and ret_str != "empty":
-        return f"{param_str} → {ret_str}"
-    return param_str
-
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-
 
 def _build_system_prompt() -> str:
-    """Return the system prompt with cwd/platform injected, plus any LMCODE.md context."""
+    """Return the system prompt with cwd/platform injected, plus any LMCODE.md content.
+
+    Walks the directory tree upward from cwd looking for LMCODE.md files and
+    appends their combined content under a ``## Project context`` heading.
+    """
     import platform as _platform
 
     cwd = pathlib.Path.cwd().as_posix()
@@ -328,180 +151,25 @@ def _build_system_prompt() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool call / result printing
+# Tool verbose wrapper
 # ---------------------------------------------------------------------------
 
 
-def _print_tool_call(name: str, args: dict[str, Any]) -> None:
-    """Print a one-line summary of a tool invocation."""
-    args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    console.print(f"  [{TEXT_MUTED}]⚙  {name}({args_str})[/]")
+def _wrap_tool_verbose(fn: Any) -> Any:
+    """Wrap a tool callable so invocations and results are printed to the console.
 
+    Preserves the original function's ``__name__``, ``__doc__``, and
+    ``__annotations__`` via :func:`functools.wraps` so the LM Studio SDK can
+    still build the correct JSON schema.
 
-def _render_diff_sidebyside(
-    old_lines: list[str], new_lines: list[str], max_rows: int = 50
-) -> tuple[Table, int, int]:
-    """Build a side-by-side diff table (old | new) and return (table, n_added, n_removed)."""
-    # Diff palette — synthesised from Claude Code/Codex source + GitHub Primer research.
-    # Backgrounds: Codex-style warm tints (confirmed closest to Claude Code post-v2.0.70).
-    # Foreground: Catppuccin palette — softer than ODP, less harsh than pure red/green.
-    # Equal bg: subtle violet-tinted neutral to keep the panel cohesive.
-    _EQ_BG = "#1c1a2e"  # unchanged lines — violet-tinted neutral
-    _DEL_FG = "#f38ba8"  # Catppuccin Mocha rose — warm, not harsh
-    _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon (Claude Code style)
-    _ADD_FG = "#a6e3a1"  # Catppuccin Mocha green — soft, clearly "added"
-    _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
-    _SEP = Text("│", style=f"dim {ACCENT}")
-
-    table = Table(box=None, padding=(0, 1), show_header=False, expand=True)
-    table.add_column(ratio=1, no_wrap=True, overflow="fold")
-    table.add_column(width=1, no_wrap=True)  # separator
-    table.add_column(ratio=1, no_wrap=True, overflow="fold")
-
-    added = removed = rows = 0
-    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
-
-    def _row(left: Text, right: Text) -> None:
-        table.add_row(left, _SEP, right)
-
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if rows >= max_rows:
-            break
-        if op == "equal":
-            for old, new in zip(old_lines[i1:i2], new_lines[j1:j2], strict=False):
-                _row(
-                    Text(old.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
-                    Text(new.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
-                )
-                rows += 1
-        elif op == "replace":
-            old_chunk = old_lines[i1:i2]
-            new_chunk = new_lines[j1:j2]
-            for i in range(max(len(old_chunk), len(new_chunk))):
-                _row(
-                    Text(
-                        old_chunk[i].rstrip("\n") if i < len(old_chunk) else "",
-                        style=f"{_DEL_FG} on {_DEL_BG}",
-                    ),
-                    Text(
-                        new_chunk[i].rstrip("\n") if i < len(new_chunk) else "",
-                        style=f"{_ADD_FG} on {_ADD_BG}",
-                    ),
-                )
-                rows += 1
-            removed += i2 - i1
-            added += j2 - j1
-        elif op == "delete":
-            for line in old_lines[i1:i2]:
-                _row(Text(line.rstrip("\n"), style=f"{_DEL_FG} on {_DEL_BG}"), Text(""))
-                rows += 1
-            removed += i2 - i1
-        elif op == "insert":
-            for line in new_lines[j1:j2]:
-                _row(Text(""), Text(line.rstrip("\n"), style=f"{_ADD_FG} on {_ADD_BG}"))
-                rows += 1
-            added += j2 - j1
-
-    return table, added, removed
-
-
-def _print_tool_result(
-    name: str,
-    result: str,
-    args: dict[str, Any] | None = None,
-    old_content: str | None = None,
-) -> None:
-    """Print a tool result — syntax panel for read_file/write_file, one-liner otherwise."""
-    if name == "read_file" and args:
-        path = args.get("path", "")
-        if path and result and not result.startswith("error:"):
-            lines = result.splitlines()
-            n = min(len(lines), 20)
-            preview = "\n".join(lines[:n])
-            suffix = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
-            ext = pathlib.Path(path).suffix.lstrip(".")
-            syn = Syntax(
-                preview + suffix,
-                ext or "text",
-                theme="one-dark",
-                line_numbers=True,
-            )
-            short = pathlib.Path(path).name
-            title = f"[{TEXT_MUTED}]{short}[/]  [dim](lines 1–{n})[/]"
-            console.print(
-                _Panel(syn, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
-            )
-            return
-    if name == "write_file" and args:
-        path = args.get("path", "")
-        new_content = args.get("content", "")
-        if path and new_content and not result.startswith("error:"):
-            short = pathlib.Path(path).name
-            ext = pathlib.Path(path).suffix.lstrip(".")
-            if old_content is None:
-                lines = new_content.splitlines()
-                n = min(len(lines), 30)
-                preview = "\n".join(lines[:n])
-                more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
-                body: Any = Syntax(
-                    preview + more, ext or "text", theme="one-dark", line_numbers=True
-                )
-                title = f"[{TEXT_MUTED}]{short}[/]  [{SUCCESS}]new file[/]"
-            else:
-                old_ls = old_content.splitlines(keepends=True)
-                new_ls = new_content.splitlines(keepends=True)
-                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
-                if n_added == 0 and n_removed == 0:
-                    console.print(
-                        f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
-                    )
-                    return
-                parts = []
-                if n_added:
-                    parts.append(f"[{SUCCESS}]+{n_added}[/]")
-                if n_removed:
-                    parts.append(f"[{ERROR}]-{n_removed}[/]")
-                title = f"[{TEXT_MUTED}]{short}[/]  {' '.join(parts)}"
-                body = diff_table
-            console.print(
-                _Panel(body, title=title, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
-            )
-            return
-    if name == "run_shell" and args:
-        cmd = args.get("command", "")
-        if cmd:
-            lines = result.splitlines()
-            n = min(len(lines), 30)
-            out_text = "\n".join(lines[:n])
-            more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
-            in_grid = Table.grid(padding=(0, 1))
-            in_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
-            in_grid.add_column(style=TEXT_SECONDARY)
-            in_grid.add_row("IN", _escape(cmd))
-            out_grid = Table.grid(padding=(0, 1))
-            out_grid.add_column(style=f"bold {ACCENT}", width=3, no_wrap=True)
-            out_grid.add_column(style=TEXT_MUTED)
-            out_grid.add_row("OUT", _escape(out_text + more))
-            content = RenderGroup(in_grid, Rule(style=f"dim {ACCENT}"), out_grid)
-            console.print(_Panel(content, border_style=ACCENT, box=box.ROUNDED, padding=(0, 1)))
-            return
-    preview = result[:100].replace("\n", " ")
-    suffix = "…" if len(result) > 100 else ""
-    console.print(f"  [{SUCCESS}]✓  {name}[/] [{TEXT_MUTED}]{preview}{suffix}[/]")
-
-
-def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
-    """Wrap a tool callable so that invocations and results are printed to the console.
-
-    Preserves the original function's __name__, __doc__, and __annotations__ via
-    functools.wraps so the LM Studio SDK can still build the correct JSON schema.
+    The LM Studio SDK calls tools with positional arguments, leaving
+    ``kwargs`` empty.  :func:`inspect.signature` is used to map positional
+    args to their parameter names so display panels can look up values by name.
     """
-
     _params = list(inspect.signature(fn).parameters.keys())
 
     @functools.wraps(fn)
     def _wrapper(*args: Any, **kwargs: Any) -> str:
-        # Merge positional args into a named dict so panels can look up by name.
         merged = {_params[i]: v for i, v in enumerate(args)}
         merged.update(kwargs)
         _print_tool_call(fn.__name__, merged)
@@ -512,7 +180,7 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
                 old_content = p.read_text(encoding="utf-8") if p.exists() else None
             except Exception:
                 pass
-        result = fn(*args, **kwargs)
+        result: str = fn(*args, **kwargs)
         _print_tool_result(fn.__name__, str(result), merged, old_content=old_content)
         return result
 
@@ -520,84 +188,75 @@ def _wrap_tool_verbose(fn: Callable[..., str]) -> Callable[..., str]:
 
 
 # ---------------------------------------------------------------------------
-# PromptSession factory
+# Token-aware file byte limit
 # ---------------------------------------------------------------------------
 
+#: Context-window size hints extracted from model identifier substrings.
+_CTX_HINTS: list[tuple[str, int]] = [
+    ("128k", 131_072),
+    ("64k", 65_536),
+    ("32k", 32_768),
+    ("16k", 16_384),
+    ("8k", 8_192),
+    ("4k", 4_096),
+]
 
-_COMPLETION_STYLE = PTStyle.from_dict(
-    {
-        # Ghost-text: dim violet so it reads as a natural extension of ACCENT.
-        "auto-suggestion": "#4b4575",
-    }
-)
+_BYTES_PER_TOKEN: int = 4  # rough bytes-per-token estimate
+_FILE_CONTENT_FRACTION: float = 0.20  # fraction of context to use for file content
+_MIN_FILE_BYTES: int = 50_000
+_MAX_FILE_BYTES: int = 500_000
 
 
-class _SlashAutoSuggest(AutoSuggest):
-    """Fish-shell-style ghost text: first match appears dim after the cursor.
+def _ctx_len_from_name(model_id: str) -> int | None:
+    """Extract a context-length token count from *model_id* by matching size suffixes.
 
-    Right-arrow or Ctrl-E accepts the full suggestion.
+    Returns the first matched token count (e.g. ``32_768`` for ``"…32k…"``),
+    or ``None`` if no hint is found.
     """
-
-    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
-        """Return the suffix of the first matching slash command."""
-        text = document.text
-        if not text.startswith("/"):
-            return None
-        for cmd, _desc in _SLASH_COMMANDS:
-            cmd_name = cmd.split()[0]
-            if cmd_name.startswith(text) and cmd_name != text:
-                return Suggestion(cmd_name[len(text) :])
-        return None
+    lower = model_id.lower()
+    for hint, tokens in _CTX_HINTS:
+        if hint in lower:
+            return tokens
+    return None
 
 
-_HISTORY_PATH = pathlib.Path.home() / ".lmcode" / "history"
+async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
+    """Return a ``(model_handle, resolved_identifier)`` tuple from *client*.
 
-
-class _CombinedAutoSuggest(AutoSuggest):
-    """Ghost text: slash suggestions for / input, history for everything else."""
-
-    _slash: AutoSuggest = _SlashAutoSuggest()
-    _hist: AutoSuggest = AutoSuggestFromHistory()
-
-    def get_suggestion(self, buffer: Any, document: Any) -> Suggestion | None:
-        """Delegate to slash or history suggester based on input prefix."""
-        if document.text.startswith("/"):
-            return self._slash.get_suggestion(buffer, document)
-        return self._hist.get_suggestion(buffer, document)
-
-
-def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ignore[type-arg]
-    """Create a PromptSession with Tab mode-cycling and ghost-text slash hints.
-
-    - Regular input: Tab cycles permission mode (ask → auto → strict).
-    - Slash input: ghost text shows first matching command; Tab accepts it inline.
-    - Ctrl+R / Up-arrow: search persistent FileHistory across sessions.
+    When *model_id* is ``"auto"``, picks the first model currently loaded in
+    LM Studio.  Raises :class:`RuntimeError` if no models are loaded.
     """
-    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    kb = KeyBindings()
+    if model_id != "auto":
+        return await client.llm.model(model_id), model_id
+    loaded = await client.llm.list_loaded()
+    if not loaded:
+        raise RuntimeError("No models are loaded in LM Studio. Load a model first, then retry.")
+    first = loaded[0]
+    return first, first.identifier
 
-    _is_slash = Condition(lambda: get_app().current_buffer.text.startswith("/"))
 
-    @kb.add("tab", eager=True, filter=~_is_slash)
-    def _cycle(event: Any) -> None:
-        """Cycle permission mode when not in a slash command."""
-        cycle_mode()
-        event.app.invalidate()
+async def _compute_max_file_bytes(model: Any, model_id: str) -> tuple[int, int | None]:
+    """Query the model's context length and derive a file-byte cap.
 
-    @kb.add("tab", eager=True, filter=_is_slash)
-    def _accept_slash(event: Any) -> None:
-        """Accept ghost-text suggestion for the current slash command."""
-        buf = event.app.current_buffer
-        if buf.suggestion:
-            buf.insert_text(buf.suggestion.text)
+    Tries ``model.get_context_length()`` first; on failure falls back to a
+    heuristic derived from *model_id*, then to the config default.
 
-    return PromptSession(
-        key_bindings=kb,
-        history=FileHistory(str(_HISTORY_PATH)),
-        auto_suggest=_CombinedAutoSuggest(),
-        enable_history_search=True,
-        style=_COMPLETION_STYLE,
-    )
+    Formula: ``clamp(ctx_tokens × bytes_per_token × fraction, 50_000, 500_000)``
+
+    Returns:
+        A ``(max_file_bytes, ctx_len)`` tuple; *ctx_len* may be ``None``.
+    """
+    ctx_len: int | None = None
+    try:
+        ctx_len = await model.get_context_length()
+    except Exception:
+        ctx_len = _ctx_len_from_name(model_id)
+
+    if ctx_len is not None and ctx_len > 0:
+        computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
+        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES)), ctx_len
+
+    return get_settings().agent.max_file_bytes, ctx_len
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +265,12 @@ def _make_session(cycle_mode: Callable[[], None]) -> PromptSession:  # type: ign
 
 
 class Agent:
-    """Wraps LM Studio's model.act() in a multi-turn interactive session."""
+    """Stateful agent that wraps LM Studio's ``model.act()`` in a multi-turn session.
+
+    One ``Agent`` instance lives for the duration of a ``lmcode chat`` session.
+    It maintains the conversation history, permission mode, verbose flag, token
+    counters, and a reference to the LM Studio model handle.
+    """
 
     def __init__(self, model_id: str = "auto") -> None:
         """Initialise the agent with the given LM Studio model identifier."""
@@ -618,32 +282,40 @@ class Agent:
         self._verbose: bool = True
         self._turn_count: int = 0
         self._compact_prompt: bool = False
-        self._model_ref: Any = None  # set after connecting, used by /compact
+        self._model_ref: Any = None  # set after connecting; used by /compact
         self._raw_history: list[tuple[str, str]] = []  # (role, content) pairs
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._last_prompt_tokens: int = 0  # prompt tokens of the most recent turn
         self._ctx_len: int | None = None  # model context window in tokens
-        self._ctx_warned: bool = False  # True once the 80% warning has fired
+        self._ctx_warned: bool = False  # True once the 80 % warning has fired
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
 
+    # ------------------------------------------------------------------
+    # Chat initialisation
+    # ------------------------------------------------------------------
+
     def _init_chat(self) -> lms.Chat:
-        """Create and return a fresh Chat with the current system prompt."""
+        """Create and return a fresh :class:`lms.Chat` with the current system prompt."""
         return lms.Chat(_build_system_prompt())
 
     def _ensure_chat(self) -> lms.Chat:
-        """Return the active Chat, creating it on the first call."""
+        """Return the active chat, creating it on the first call."""
         if self._chat is None:
             self._chat = self._init_chat()
         return self._chat
 
-    def _handle_slash(self, raw: str) -> bool:
-        """Handle a slash command.  Returns True if input was consumed, False otherwise.
+    # ------------------------------------------------------------------
+    # Slash-command handler
+    # ------------------------------------------------------------------
 
-        Supported commands: /help, /clear, /mode [ask|auto|strict], /model,
-        /verbose, /version, /exit.
+    def _handle_slash(self, raw: str) -> bool:
+        """Handle a slash command and return ``True`` if the input was consumed.
+
+        All commands that don't require async work are handled here.
+        ``/compact`` is handled directly in :meth:`run` because it needs ``await``.
         """
         parts = raw.strip().split()
         cmd = parts[0].lower()
@@ -722,28 +394,7 @@ class Agent:
             return True
 
         if cmd == "/tokens":
-
-            def _fmt_tok(n: int) -> str:
-                return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
-
-            p = self._session_prompt_tokens
-            c = self._session_completion_tokens
-            total = p + c
-            console.print(f"\n[{ACCENT_BRIGHT}]session tokens[/]")
-            tok_rows: list[tuple[str, str]] = [
-                ("prompt (↑)", _fmt_tok(p)),
-                ("generated (↓)", _fmt_tok(c)),
-                ("total", _fmt_tok(total)),
-            ]
-            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
-            if ctx_line:
-                tok_rows.append(("context", ctx_line))
-            for label, value in tok_rows:
-                row = Text()
-                row.append(f"  {label:<16}", style=TEXT_MUTED)
-                row.append(value)
-                console.print(row)
-            console.print()
+            self._print_tokens()
             return True
 
         if cmd == "/hide-model":
@@ -753,25 +404,7 @@ class Agent:
             return True
 
         if cmd == "/status":
-            ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
-            console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
-            status_rows: list[tuple[str, str]] = [
-                ("model", self._model_display or "(none)"),
-                ("mode", self._mode),
-                ("verbose", "on" if self._verbose else "off"),
-                ("tips", "on" if self._show_tips else "off"),
-                ("stats", "on" if self._show_stats else "off"),
-                ("model in prompt", "visible" if not self._compact_prompt else "hidden"),
-                ("turns", str(self._turn_count)),
-            ]
-            if ctx_line:
-                status_rows.append(("context", ctx_line))
-            for label, value in status_rows:
-                row = Text()
-                row.append(f"  {label:<16}", style=TEXT_MUTED)
-                row.append(value)
-                console.print(row)
-            console.print()
+            self._print_status()
             return True
 
         if cmd == "/history":
@@ -779,7 +412,7 @@ class Agent:
                 n = int(parts[1]) if len(parts) > 1 else 5
             except ValueError:
                 n = 5
-            self._print_history(n)
+            _print_history(self._raw_history, n)
             return True
 
         if cmd == "/version":
@@ -789,40 +422,65 @@ class Agent:
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
         return True
 
-    def _print_history(self, n: int = 5) -> None:
-        """Render the last N conversation turns as styled Rich panels."""
-        if not self._raw_history:
-            console.print(f"[{TEXT_MUTED}]no history yet[/]\n")
-            return
-        # Pair up user/assistant messages
-        user_msgs = [m for role, m in self._raw_history if role == "user"]
-        asst_msgs = [m for role, m in self._raw_history if role == "assistant"]
-        pairs = list(zip(user_msgs, asst_msgs, strict=False))
-        turns = pairs[-n:]
-        start = max(1, len(pairs) - n + 1)
-        console.print()
-        for i, (user_msg, asst_msg) in enumerate(turns):
-            turn = start + i
-            console.print(
-                _Panel(
-                    f"[{TEXT_MUTED}]{user_msg}[/]",
-                    title=f"[{ACCENT}]turn {turn}  ·  you[/]",
-                    border_style=BORDER,
-                    padding=(0, 1),
-                )
-            )
-            console.print(
-                _Panel(
-                    asst_msg,
-                    title=f"[{ACCENT_BRIGHT}]turn {turn}  ·  lmcode[/]",
-                    border_style=f"dim {ACCENT}",
-                    padding=(0, 1),
-                )
-            )
+    def _print_tokens(self) -> None:
+        """Print session-wide token usage totals for the ``/tokens`` command."""
+
+        def _fmt_tok(n: int) -> str:
+            return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
+
+        p = self._session_prompt_tokens
+        c = self._session_completion_tokens
+        total = p + c
+        console.print(f"\n[{ACCENT_BRIGHT}]session tokens[/]")
+        tok_rows: list[tuple[str, str]] = [
+            ("prompt (↑)", _fmt_tok(p)),
+            ("generated (↓)", _fmt_tok(c)),
+            ("total", _fmt_tok(total)),
+        ]
+        ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
+        if ctx_line:
+            tok_rows.append(("context", ctx_line))
+        for label, value in tok_rows:
+            row = Text()
+            row.append(f"  {label:<16}", style=TEXT_MUTED)
+            row.append(value)
+            console.print(row)
         console.print()
 
+    def _print_status(self) -> None:
+        """Print current session state for the ``/status`` command."""
+        ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
+        console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
+        status_rows: list[tuple[str, str]] = [
+            ("model", self._model_display or "(none)"),
+            ("mode", self._mode),
+            ("verbose", "on" if self._verbose else "off"),
+            ("tips", "on" if self._show_tips else "off"),
+            ("stats", "on" if self._show_stats else "off"),
+            ("model in prompt", "visible" if not self._compact_prompt else "hidden"),
+            ("turns", str(self._turn_count)),
+        ]
+        if ctx_line:
+            status_rows.append(("context", ctx_line))
+        for label, value in status_rows:
+            row = Text()
+            row.append(f"  {label:<16}", style=TEXT_MUTED)
+            row.append(value)
+            console.print(row)
+        console.print()
+
+    # ------------------------------------------------------------------
+    # /compact
+    # ------------------------------------------------------------------
+
     async def _do_compact(self) -> None:
-        """Summarise the conversation history and replace it with the summary."""
+        """Summarise the conversation history and replace it with the summary.
+
+        Calls ``model.respond()`` with a summarisation prompt, then resets the
+        chat object and injects the summary as a ``[context from compacted
+        history]`` user message so the model has continuity without the full
+        token cost.
+        """
         if not self._raw_history or self._model_ref is None:
             console.print(f"[{TEXT_MUTED}]nothing to compact[/]\n")
             return
@@ -858,6 +516,8 @@ class Agent:
                 summary_text = str(result)
             summary.append(summary_text.strip())
 
+        from rich.panel import Panel
+
         text = summary[0] if summary else "(no summary generated)"
         msgs_compacted = len(self._raw_history)
 
@@ -865,8 +525,6 @@ class Agent:
         self._chat.add_user_message("[context from compacted history]\n" + text)
         self._raw_history.clear()
         self._ctx_warned = False
-
-        from rich.panel import Panel
 
         preview = text[:300] + ("…" if len(text) > 300 else "")
         console.print(
@@ -878,25 +536,28 @@ class Agent:
         )
         console.print()
 
-    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
-        """Send one user message, run the tool loop, return (response, stats_line).
+    # ------------------------------------------------------------------
+    # _run_turn — single agent iteration
+    # ------------------------------------------------------------------
 
-        model.act() works on an internal copy of the chat, so we manually
-        update our history with the final assistant response afterwards.
-        The response text is captured via the on_message callback because
-        ActResult only carries timing metadata, not the actual content.
-        If *live* is a Rich Live instance, a keepalive task updates the spinner
-        every 100 ms and rotates tips every 8 s.
-        When self._verbose is True, each tool is wrapped to print its call
-        and result before being passed to model.act().
-        Tool call messages update active_label so the keepalive task can reflect
-        the active file path in the spinner.
+    async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
+        """Send one user message, run the tool loop, return ``(response, stats_line)``.
+
+        ``model.act()`` handles the full tool-calling cycle internally, so we
+        only need to supply callbacks.  The response text is captured via
+        ``on_message`` because ``ActResult`` only carries timing metadata.
+
+        When *live* is a :class:`~rich.live.Live` instance, a keepalive task
+        updates the spinner label every 100 ms and rotates tips every ~8 s.
+
+        When :attr:`_verbose` is ``True``, each tool is wrapped with
+        :func:`_wrap_tool_verbose` to print its call and result inline.
         """
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
 
         captured: list[str] = []
-        # Base label without animated dots suffix.  Keepalive appends _DOTS.
+        # Spinner base label (without animated-dots suffix).
         # Standard values: "thinking" | "working" | "finishing" | "tool /path"
         active_base: list[str] = ["thinking"]
 
@@ -905,8 +566,8 @@ class Agent:
 
             State transitions:
               tool_calls present  → "working" (or "tool /path" for file tools)
-              role == "tool"      → "finishing" (tool result in, model writing)
-              assistant content   → captured for display
+              role == "tool"      → "finishing" (tool result received)
+              assistant content   → appended to *captured* for display
             """
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
@@ -928,27 +589,27 @@ class Agent:
         stats_capture: list[Any] = []
 
         def _on_prediction_completed(result: Any) -> None:
-            """Capture per-round PredictionResult.stats for the post-response summary."""
+            """Capture per-round ``PredictionResult.stats`` for the post-response summary."""
             if hasattr(result, "stats"):
                 stats_capture.append(result.stats)
 
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens; label update is handled by the keepalive."""
+            """Count generated tokens for the spinner label."""
             tok_count[0] += 1
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
 
-        # Keepalive task: updates the spinner label every 100 ms on the main
-        # event loop. model.act() must stay on the main loop (the SDK's
-        # AsyncTaskManager is bound to it). The task runs whenever model.act()
-        # yields back to the loop (async HTTP I/O during prefill).
         stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
 
         async def _keepalive() -> None:
-            """Update spinner label every 100 ms; animate dots; rotate tips every 8 s."""
+            """Update the spinner label every 100 ms; animate dots; rotate tips every ~8 s.
+
+            Runs on the main event loop alongside ``model.act()``.  Gets CPU time
+            whenever the SDK yields back to the loop during async HTTP prefill.
+            """
             tip_idx = 0
             dot_idx = 0
             tick = 0
@@ -963,10 +624,11 @@ class Agent:
                     if is_word:
                         dots = _DOTS[dot_idx]
                         tok = tok_count[0]
-                        if base == "thinking" and tok > 0:
-                            label = f" {base}{dots}  {tok} tok"
-                        else:
-                            label = f" {base}{dots}"
+                        label = (
+                            f" {base}{dots}  {tok} tok"
+                            if base == "thinking" and tok > 0
+                            else f" {base}{dots}"
+                        )
                     else:
                         label = f" {base}"
                     rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
@@ -989,7 +651,6 @@ class Agent:
             stop_evt.set()
             await keepalive
 
-        # Accumulate session-wide token counts for /tokens command.
         for s in stats_capture:
             self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
             self._session_completion_tokens += getattr(s, "predicted_tokens_count", 0) or 0
@@ -1002,12 +663,18 @@ class Agent:
         elapsed = getattr(act_result, "total_time_seconds", None)
         return response_text, _build_stats_line(stats_capture, elapsed)
 
+    # ------------------------------------------------------------------
+    # run — main event loop
+    # ------------------------------------------------------------------
+
     async def run(self) -> None:
         """Connect to LM Studio and run the interactive chat loop.
 
         Tab cycles the permission mode (ask → auto → strict) in-place.
-        Slash commands (/help, /clear, /mode, /exit) are handled inline.
-        Exits cleanly on EOF (Ctrl+D) or Ctrl+C.
+        Slash commands (/help, /clear, /mode, /exit, …) are handled inline.
+        Ctrl+C mid-generation cancels the current turn, rolls back the chat
+        history, and returns to the prompt without exiting lmcode.
+        Exits cleanly on EOF (Ctrl+D) or ``/exit``.
         """
         settings = get_settings()
 
@@ -1015,7 +682,7 @@ class Agent:
             """Advance to the next mode in-place (prompt redraws via invalidate)."""
             self._mode = next_mode(self._mode)
 
-        session = _make_session(cycle_mode=_cycle_mode)
+        session = make_session(cycle_mode=_cycle_mode)
 
         try:
             async with lms.AsyncClient() as client:
@@ -1045,7 +712,6 @@ class Agent:
                     if not stripped:
                         continue
 
-                    # Replace the submitted prompt line with a dim history entry.
                     _rewrite_as_history(stripped)
 
                     if stripped.lower() in ("exit", "quit", "q"):
@@ -1083,8 +749,8 @@ class Agent:
                             _interrupted = True
 
                     if _interrupted:
-                        # Roll back: remove the user message added above and
-                        # rebuild the chat so no orphaned message remains.
+                        # Roll back: pop the user message and rebuild the chat
+                        # so no orphaned message remains in the history.
                         self._raw_history.pop()
                         self._chat = self._init_chat()
                         for _role, _msg in self._raw_history:
@@ -1107,9 +773,10 @@ class Agent:
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
+
                     if self._ctx_len and not self._ctx_warned:
                         used = self._last_prompt_tokens
-                        if used and used / self._ctx_len >= _CTX_WARN_THRESHOLD:
+                        if used and used / self._ctx_len >= CTX_WARN_THRESHOLD:
                             self._ctx_warned = True
                             console.print(
                                 f"\n[{WARNING}]context at "
@@ -1138,122 +805,10 @@ class Agent:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Entry point
 # ---------------------------------------------------------------------------
-
-
-async def _get_model(client: Any, model_id: str) -> tuple[Any, str]:
-    """Return a (model_handle, resolved_identifier) tuple.
-
-    When model_id is 'auto', picks the first model currently loaded in
-    LM Studio. Raises RuntimeError if no models are loaded.
-    """
-    if model_id != "auto":
-        return await client.llm.model(model_id), model_id
-
-    loaded = await client.llm.list_loaded()
-    if not loaded:
-        raise RuntimeError("No models are loaded in LM Studio. Load a model first, then retry.")
-    first = loaded[0]
-    return first, first.identifier
-
-
-def _build_stats_line(stats_list: list[Any], total_seconds: float | None) -> str:
-    """Build a compact stats string from accumulated PredictionResult.stats objects.
-
-    Returns an empty string when no stats are available so the caller can
-    skip printing entirely.  Format: '↑ 1.2k  ↓ 384  ·  45 tok/s  ·  2.3s'
-    """
-    if not stats_list:
-        return ""
-
-    def _fmt(n: int) -> str:
-        return f"{n / 1_000:.1f}k" if n >= 1_000 else str(n)
-
-    prompt_tok = sum(getattr(s, "prompt_tokens_count", 0) or 0 for s in stats_list)
-    pred_tok = sum(getattr(s, "predicted_tokens_count", 0) or 0 for s in stats_list)
-    tok_per_sec: float = getattr(stats_list[-1], "tokens_per_second", 0) or 0
-
-    parts: list[str] = []
-    if prompt_tok or pred_tok:
-        parts.append(f"↑ {_fmt(prompt_tok)}  ↓ {_fmt(pred_tok)}")
-    if tok_per_sec > 0:
-        parts.append(f"{tok_per_sec:.0f} tok/s")
-    if total_seconds and total_seconds > 0:
-        parts.append(f"{total_seconds:.1f}s")
-
-    return "  ·  ".join(parts)
-
-
-def _print_connection_error(base_url: str) -> None:
-    """Print a user-friendly message when LM Studio cannot be reached."""
-    console.print(f"[{ERROR}]error:[/] cannot connect to LM Studio at {base_url}")
-    console.print(
-        f"[{TEXT_MUTED}]→ Open LM Studio and enable the local server (default: localhost:1234)[/]"
-    )  # noqa: E501
-
-
-def _print_lmstudio_closed() -> None:
-    """Print a user-friendly message when LM Studio closes mid-session."""
-    console.print(f"\n[{ERROR}]LM Studio disconnected[/]")
-    console.print(f"[{TEXT_MUTED}]→ restart LM Studio and run lmcode again[/]")
-
-
-# ---------------------------------------------------------------------------
-# Token-aware file byte limit (Issue #2)
-# ---------------------------------------------------------------------------
-
-# Mapping of context-window keywords (lowercase) to token count.
-_CTX_HINTS: list[tuple[str, int]] = [
-    ("128k", 131_072),
-    ("64k", 65_536),
-    ("32k", 32_768),
-    ("16k", 16_384),
-    ("8k", 8_192),
-    ("4k", 4_096),
-]
-
-# Rough byte-per-token estimate and fraction of context to use for file content.
-_BYTES_PER_TOKEN: int = 4
-_FILE_CONTENT_FRACTION: float = 0.20
-_MIN_FILE_BYTES: int = 50_000
-_MAX_FILE_BYTES: int = 500_000
-
-
-def _ctx_len_from_name(model_id: str) -> int | None:
-    """Extract a context-length hint from *model_id* by looking for size suffixes.
-
-    Returns the matched token count, or None if no hint is found.
-    """
-    lower = model_id.lower()
-    for hint, tokens in _CTX_HINTS:
-        if hint in lower:
-            return tokens
-    return None
-
-
-async def _compute_max_file_bytes(model: Any, model_id: str) -> tuple[int, int | None]:
-    """Query the model's actual context length and derive a file-byte cap.
-
-    Queries ``model.get_context_length()`` first; on failure, falls back to
-    a heuristic derived from the model identifier, then to the config default.
-
-    The formula is:  clamp(ctx_tokens * bytes_per_token * fraction, 50_000, 500_000)
-    Returns a (max_file_bytes, ctx_len) tuple; ctx_len may be None if unknown.
-    """
-    ctx_len: int | None = None
-    try:
-        ctx_len = await model.get_context_length()
-    except Exception:
-        ctx_len = _ctx_len_from_name(model_id)
-
-    if ctx_len is not None and ctx_len > 0:
-        computed = int(ctx_len * _BYTES_PER_TOKEN * _FILE_CONTENT_FRACTION)
-        return max(_MIN_FILE_BYTES, min(computed, _MAX_FILE_BYTES)), ctx_len
-
-    return get_settings().agent.max_file_bytes, ctx_len
 
 
 def run_chat(model_id: str = "auto") -> None:
-    """Synchronous entry point — runs the async Agent.run() via asyncio."""
+    """Synchronous entry point — runs :meth:`Agent.run` via :func:`asyncio.run`."""
     asyncio.run(Agent(model_id).run())
