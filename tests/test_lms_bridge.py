@@ -124,6 +124,33 @@ def test_downloaded_model_from_dict_minimal() -> None:
     assert m.identifier is None
 
 
+def test_downloaded_model_load_name_uses_identifier_when_present() -> None:
+    m = DownloadedModel(path="/models/file.gguf", identifier="qwen2.5-coder-7b")
+    assert m.load_name() == "qwen2.5-coder-7b"
+
+
+def test_downloaded_model_load_name_strips_gguf_extension() -> None:
+    m = DownloadedModel(path="/models/qwen2.5-coder-7b-q4_k_m.gguf", identifier=None)
+    assert m.load_name() == "qwen2.5-coder-7b-q4_k_m"
+    assert ".gguf" not in m.load_name()
+
+
+def test_downloaded_model_load_name_handles_windows_path() -> None:
+    m = DownloadedModel(path="C:\\models\\my-model.gguf", identifier=None)
+    assert m.load_name() == "my-model"
+
+
+def test_downloaded_model_format_size() -> None:
+    m = DownloadedModel(path="/x", size_bytes=4_831_838_208)
+    assert "GB" in m.format_size()
+    assert m.format_size() != ""
+
+
+def test_downloaded_model_format_size_unknown() -> None:
+    m = DownloadedModel(path="/x", size_bytes=None)
+    assert m.format_size() == ""
+
+
 # ---------------------------------------------------------------------------
 # list_loaded_models
 # ---------------------------------------------------------------------------

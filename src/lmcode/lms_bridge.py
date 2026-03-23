@@ -99,6 +99,27 @@ class DownloadedModel:
             size_bytes=_int_or_none(data.get("sizeBytes")),
         )
 
+    def load_name(self) -> str:
+        """Return the name to pass to ``lms load``.
+
+        Uses the model identifier when available.  Falls back to the filename
+        without extension (e.g. ``qwen2.5-coder-7b-instruct-q4_k_m`` instead
+        of ``qwen2.5-coder-7b-instruct-q4_k_m.gguf``).
+        """
+        if self.identifier:
+            return self.identifier
+        basename = self.path.replace("\\", "/").split("/")[-1]
+        if basename.lower().endswith(".gguf"):
+            return basename[:-5]
+        return basename
+
+    def format_size(self) -> str:
+        """Return a human-readable size string like '4.5 GB' or '' if unknown."""
+        if self.size_bytes is None:
+            return ""
+        gb = self.size_bytes / (1024**3)
+        return f"{gb:.1f} GB"
+
 
 # ---------------------------------------------------------------------------
 # Public API
