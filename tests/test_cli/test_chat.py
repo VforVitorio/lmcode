@@ -10,7 +10,6 @@ import typer
 from lmcode.cli.chat import (
     _build_model_meta,
     _exit_no_model,
-    _try_load_first_model,
     _try_start_server,
 )
 from lmcode.lms_bridge import DownloadedModel, LoadedModel
@@ -80,46 +79,6 @@ def test_build_model_meta_only_architecture() -> None:
         result = _build_model_meta("M")
     assert result == "llama"
     assert "·" not in result
-
-
-# ---------------------------------------------------------------------------
-# _try_load_first_model — auto-load at startup
-# ---------------------------------------------------------------------------
-
-
-def test_try_load_first_model_loads_and_returns_name(capsys: pytest.CaptureFixture[str]) -> None:
-    dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
-    with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
-        patch("lmcode.cli.chat.load_model", return_value=True),
-    ):
-        result = _try_load_first_model()
-    assert result == "Qwen2.5-Coder-7B"
-    assert "loading" in capsys.readouterr().out
-
-
-def test_try_load_first_model_returns_empty_when_lms_absent() -> None:
-    with patch("lmcode.cli.chat.is_available", return_value=False):
-        assert _try_load_first_model() == ""
-
-
-def test_try_load_first_model_returns_empty_when_no_downloads() -> None:
-    with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.list_downloaded_models", return_value=[]),
-    ):
-        assert _try_load_first_model() == ""
-
-
-def test_try_load_first_model_returns_empty_when_load_fails() -> None:
-    dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
-    with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
-        patch("lmcode.cli.chat.load_model", return_value=False),
-    ):
-        assert _try_load_first_model() == ""
 
 
 # ---------------------------------------------------------------------------

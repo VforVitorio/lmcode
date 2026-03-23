@@ -6,6 +6,8 @@ import time
 
 import lmstudio as lms
 import typer
+from prompt_toolkit.shortcuts import radiolist_dialog
+from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.text import Text
 
@@ -21,7 +23,16 @@ from lmcode.lms_bridge import (
     suggest_load_commands,
 )
 from lmcode.ui.banner import print_banner
-from lmcode.ui.colors import ERROR, SUCCESS, TEXT_MUTED, WARNING
+from lmcode.ui.colors import (
+    ACCENT,
+    BG_PRIMARY,
+    BG_SECONDARY,
+    ERROR,
+    SUCCESS,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    WARNING,
+)
 
 app = typer.Typer()
 
@@ -32,6 +43,20 @@ _SERVER_START_TIMEOUT: int = 20
 
 #: Seconds between connection retries while waiting for the server.
 _SERVER_POLL_INTERVAL: float = 1.0
+
+#: prompt_toolkit dialog style matching the lmcode Catppuccin palette.
+_DIALOG_STYLE = PTStyle.from_dict(
+    {
+        "dialog": f"bg:{BG_PRIMARY}",
+        "dialog.body": f"bg:{BG_PRIMARY} {TEXT_PRIMARY}",
+        "dialog frame.label": f"bg:{BG_SECONDARY} {ACCENT}",
+        "dialog.body radiolist": f"bg:{BG_PRIMARY}",
+        "dialog.body radiolist radio": TEXT_MUTED,
+        "dialog.body radiolist radio-selected": f"bold {ACCENT}",
+        "button": f"bg:{BG_SECONDARY} {TEXT_PRIMARY}",
+        "button.focused": f"bg:{ACCENT} {BG_PRIMARY} bold",
+    }
+)
 
 
 def _probe_lmstudio() -> tuple[bool, str]:
@@ -73,28 +98,60 @@ def _try_start_server() -> bool:
     return False
 
 
-def _try_load_first_model() -> str:
-    """Auto-load the first downloaded model when none is loaded.
+def _startup_recovery() -> str:
+    """Interactive arrow-key menu shown when no model is loaded at startup.
 
-    Called at startup when the server is reachable but no model is active.
-    If ``lms`` is on PATH and at least one model is downloaded, loads it
-    automatically and returns its identifier.  Returns an empty string on
-    any failure or when ``lms`` is unavailable.
+    Presents a two-level selection:
+    1. Main menu — Load a model / Exit
+    2. Model submenu — one entry per downloaded model
+
+    After the user picks a model, loads it via ``lms load`` and returns the
+    model identifier.  Raises :class:`typer.Exit` if the user exits or loading
+    fails.
     """
-    if not is_available():
-        return ""
+    # --- main menu ---
+    action = radiolist_dialog(
+        title="lmcode — no model loaded",
+        text="Use ↑↓ to navigate · Enter to confirm",
+        values=[
+            ("load", "Load a model"),
+            ("exit", "Exit"),
+        ],
+        style=_DIALOG_STYLE,
+    ).run()
+
+    if not action or action == "exit":
+        raise typer.Exit(0)
+
+    # --- model selection submenu ---
     downloaded = list_downloaded_models()
     if not downloaded:
-        return ""
-    first = downloaded[0]
-    name = first.load_name()
-    size = first.format_size()
-    size_str = f"  [{TEXT_MUTED}]({size})[/]" if size else ""
-    _console.print(f"[{TEXT_MUTED}]→ no model loaded — loading {name}{size_str}…[/]")
-    if not load_model(name):
-        return ""
-    _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]loaded {name}[/]")
-    return name
+        _console.print(f"\n[{WARNING}]no models downloaded yet[/]")
+        _console.print(f"[{TEXT_MUTED}]  → run: lms get <model-name>[/]\n")
+        raise typer.Exit(1)
+
+    model_values = [(m.load_name(), f"{m.load_name()}  {m.format_size()}") for m in downloaded]
+    selected = radiolist_dialog(
+        title="select a model",
+        text="Use ↑↓ to navigate · Enter to load · Esc to cancel",
+        values=model_values,
+        style=_DIALOG_STYLE,
+    ).run()
+
+    if not selected:
+        raise typer.Exit(0)
+
+    # --- load ---
+    _console.print(f"\n[{TEXT_MUTED}]→ loading {selected}…[/]")
+    if not load_model(selected):
+        _console.print(f"[{ERROR}]failed to load '{selected}'[/]")
+        _console.print(
+            f"[{TEXT_MUTED}]  → make sure LM Studio server is running (lms server start)[/]\n"
+        )
+        raise typer.Exit(1)
+
+    _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]loaded {selected}[/]\n")
+    return selected
 
 
 def _build_model_meta(identifier: str) -> str:
@@ -124,16 +181,15 @@ def _exit_no_server(base_url: str) -> None:
     row.append(" and enable the local server ", style=TEXT_MUTED)
     row.append("(Developer → Start Server)", style=TEXT_MUTED)
     _console.print(row)
-    _console.print(f"[{TEXT_MUTED}]  → Load a model, then run lmcode again[/]\n")
+    _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
     raise typer.Exit(1)
 
 
 def _exit_no_model() -> None:
-    """Print a guided startup error when no model could be loaded.
+    """Print a static error when no model could be loaded and lms is unavailable.
 
-    Reached only when auto-load failed or lms is unavailable.  Shows
-    ``lms get`` commands when nothing is downloaded yet, or a plain message
-    when ``lms`` is not installed.
+    Only reached when ``lms`` is not on PATH so the interactive recovery menu
+    cannot be shown.
     """
     _console.print(f"[{WARNING}]no model loaded[/]")
 
@@ -145,9 +201,8 @@ def _exit_no_model() -> None:
                 _console.print(f"  [bold]{cmd}[/]")
             _console.print(f"[{TEXT_MUTED}]  → then run lmcode again[/]\n")
         else:
-            # Auto-load was attempted and failed.
+            _console.print(f"[{TEXT_MUTED}]  → could not load model automatically[/]")
             _console.print(
-                f"[{TEXT_MUTED}]  → could not load model automatically[/]\n"
                 f"[{TEXT_MUTED}]  → try manually: lms load {downloaded[0].load_name()}[/]\n"
             )
     else:
@@ -174,9 +229,10 @@ def chat(
             _exit_no_server(settings.lmstudio.base_url)
 
     if model == "auto" and not detected_model:
-        # Server is up but no model is loaded — try to load one automatically (#19/#34).
-        detected_model = _try_load_first_model()
-        if not detected_model:
+        if is_available():
+            # Show interactive recovery menu (#50).
+            detected_model = _startup_recovery()
+        else:
             _exit_no_model()
 
     display_model = detected_model if model == "auto" else model
