@@ -632,16 +632,16 @@ class Agent:
         loaded = list_loaded_models()
         downloaded = list_downloaded_models()
 
-        loaded_ids = {m.identifier for m in loaded}
+        loaded_ids = {m.identifier for m in loaded if m.identifier}
 
         console.print(f"\n[{ACCENT_BRIGHT}]downloaded models[/]")
         if not downloaded:
             console.print(f"  [{TEXT_MUTED}](none — run: lms get <model>)[/]")
         else:
             for m in downloaded:
-                mid = m.identifier or m.path.split("/")[-1].split("\\")[-1]
+                mid = m.load_name()
                 tag = f" [{ACCENT}]● loaded[/]" if mid in loaded_ids else ""
-                size = f"  [{TEXT_MUTED}]{m.format_size() if hasattr(m, 'format_size') else ''}[/]"
+                size = f"  [{TEXT_MUTED}]{m.format_size()}[/]"
                 row = Text()
                 row.append(f"  {mid}", style=TEXT_MUTED if mid not in loaded_ids else ACCENT)
                 console.print(row, end="")
