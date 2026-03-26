@@ -11,6 +11,26 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.7.0] - 2026-03-26
+
+### Added
+- **`/model` command** — switch models mid-session without restarting: `/model list`, `/model load <id>`, `/model unload` (#19)
+- **Auto-start LM Studio at startup** — when the inference server is not running, lmcode automatically tries `lms server start` (if LM Studio GUI is open) and then `lms daemon up` (headless, no GUI), with animated dots throughout so the terminal never appears frozen (#34, #85)
+- **Interactive arrow-key model picker** — when no model is loaded, a menu lets you pick from your downloaded models; animated dots while loading (#50)
+- **ASCII art logo in startup menus** — the lmcode banner is shown above every startup menu (#86)
+- **`daemon_up()` in `lms_bridge`** — wraps `lms daemon up` for headless LM Studio startup
+
+### Fixed
+- **Fast startup probe** — `_probe_lmstudio()` now does a 0.5 s socket pre-check before calling the SDK, eliminating the multi-second freeze when the server is simply not running (#85)
+- **`lms load` arg format** — `--gpu=auto` changed to `--gpu auto` (two separate args); previous format caused silent load failure
+- **Model identifier for `lms load`** — `DownloadedModel` now reads `modelKey` from `lms ls --json` as fallback identifier, matching what `lms load` actually accepts
+
+### Changed
+- Startup menus use pure ANSI rendering instead of prompt_toolkit `Application`, eliminating cursor highlight artifacts on the selected item
+- `server_start()` and `daemon_up()` are launched in daemon threads during startup so the animation begins immediately
+
+---
+
 ## [0.6.1] - 2026-03-23
 
 ### Changed

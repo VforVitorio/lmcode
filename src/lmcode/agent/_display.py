@@ -67,7 +67,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear conversation history"),
     ("/compact", "Summarise history to free context space"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
-    ("/model", "Show the current model"),
+    ("/model", "Show current model · /model list · /model load <id> · /model unload"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),
@@ -76,6 +76,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tools", "List all available tools with their signatures"),
     ("/history [N]", "Show last N conversation turns (default 5)"),
     ("/status", "Show current session state"),
+    ("/log", "Stream lms model I/O logs — shows exact prompt sent to the model"),
     ("/version", "Show the running lmcode version"),
     ("/exit", "Exit lmcode"),
 ]
@@ -465,6 +466,37 @@ def _build_stats_line(stats_list: list[Any], total_seconds: float | None) -> str
 
 
 # ---------------------------------------------------------------------------
+# /log — lms log stream event formatter
+# ---------------------------------------------------------------------------
+
+
+def _print_log_event(event: dict[str, object]) -> None:
+    """Print a single event from ``lms log stream --json``.
+
+    Known event types are ``"input"`` (prompt sent to the model) and
+    ``"output"`` (response tokens received).  Unknown types are printed as
+    compact JSON so no data is silently discarded.
+    """
+    event_type = str(event.get("type", ""))
+    text = str(event.get("text", ""))
+    if event_type == "input":
+        label = Text()
+        label.append("  ↑ input   ", style=f"dim {ACCENT}")
+        label.append(text[:300], style=TEXT_MUTED)
+        console.print(label)
+    elif event_type == "output":
+        label = Text()
+        label.append("  ↓ output  ", style=f"dim {ACCENT_BRIGHT}")
+        label.append(text[:300])
+        console.print(label)
+    else:
+        row = Text()
+        row.append(f"  {event_type or '?'}  ", style=f"dim {TEXT_MUTED}")
+        row.append(str(event), style=TEXT_MUTED)
+        console.print(row)
+
+
+# ---------------------------------------------------------------------------
 # Error messages
 # ---------------------------------------------------------------------------
 
@@ -494,6 +526,7 @@ __all__ = [
     "_ctx_usage_line",
     "_format_tool_signature",
     "_print_connection_error",
+    "_print_log_event",
     "_print_help",
     "_print_history",
     "_print_lmstudio_closed",

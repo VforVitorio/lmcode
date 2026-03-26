@@ -103,7 +103,13 @@ LM Studio   →   lmcode agent   →   your codebase
 ## Requirements
 
 - Python 3.11+
-- [LM Studio](https://lmstudio.ai) running locally with a model loaded
+- [LM Studio](https://lmstudio.ai) with a model loaded. The `lms` CLI (ships with LM Studio) is the easiest way to get there:
+  ```bash
+  lms get Qwen2.5-Coder-7B-Instruct@q4_k_m   # download the recommended model (~4.5 GB)
+  lms load Qwen2.5-Coder-7B-Instruct           # load it into memory
+  lms ps                                        # confirm it is running
+  ```
+  See the [LM Studio CLI reference](https://lmstudio.ai/docs/cli) for full documentation. `lms` controls the inference infrastructure — model download, load/unload, server lifecycle. lmcode is the agentic coding layer on top.
 - [uv](https://docs.astral.sh/uv) (recommended) or pip
 
 ---
@@ -149,12 +155,11 @@ The agent will connect to LM Studio automatically. Type your request and press E
 ## How it works
 
 ```
-lmcode chat
+LM Studio (inference backend)
+     │   managed by the `lms` CLI — model load/unload, server, logs
      │
      ▼
-Agent Core
-     │
-     ├── LM Studio SDK (model.act)
+lmcode chat  ──  agent loop (model.act)
      │
      └── Tool Runner
             ├── read_file / write_file / list_files
@@ -162,6 +167,8 @@ Agent Core
             ├── search_code (ripgrep)
             └── git (status, diff, commit)
 ```
+
+**lmcode vs `lms`:** LM Studio's official `lms` CLI handles infrastructure — downloading models, loading/unloading them, controlling the HTTP server, streaming logs. lmcode is the agentic coding layer: it drives the tool-calling loop, manages conversation context, renders diffs and file panels, and enforces permission modes. The two tools are complementary.
 
 ---
 
@@ -236,10 +243,20 @@ uv run pytest
 - [ ] Plan mode — model proposes a plan before executing (#21)
 - [ ] Agent mode — autonomous multi-step execution (#22)
 
-**v0.6.0 — Stability** 🔶 in progress
+**v0.6.0 — Stability** ✅ done
 - [x] Graceful LM Studio disconnect handling (#70)
-- [ ] Git tools — `git_status`, `git_diff`, `git_commit`, `git_log`
+- [x] SDK WebSocket JSON noise suppression
+
+**v0.6.1 — Refactor & polish** ✅ done
+- [x] `agent/core.py` split into focused submodules (`_noise`, `_display`, `_prompt`)
+- [x] `write_file` mixed newline unescape fix (Qwen 7B compatibility)
+- [x] Full test coverage for display and noise modules
+
+**v0.7.0 — In progress**
 - [ ] Streaming Markdown output (#56)
+- [ ] Interactive permission UI — diff view + arrow-key confirm in ask mode (#40)
+- [ ] `/model` mid-session switch (#19)
+- [ ] Enriched startup banner via `lms ps --json`
 
 **v1.0**
 - [ ] Session recorder + Textual TUI viewer
