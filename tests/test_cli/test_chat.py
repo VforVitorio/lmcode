@@ -7,7 +7,11 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from lmcode.cli.chat import _build_model_meta, _exit_no_model
+from lmcode.cli.chat import (
+    _auto_bring_up,
+    _build_model_meta,
+    _exit_no_model,
+)
 from lmcode.lms_bridge import DownloadedModel, LoadedModel
 
 
@@ -78,7 +82,7 @@ def test_build_model_meta_only_architecture() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _exit_no_model — startup recovery (#78)
+# _exit_no_model — last-resort error (no downloads or auto-load failed)
 # ---------------------------------------------------------------------------
 
 
@@ -105,10 +109,10 @@ def test_exit_no_model_lms_available_no_downloads(capsys: pytest.CaptureFixture[
         _exit_no_model()
     out = capsys.readouterr().out
     assert "lms get" in out
-    assert "lms load" in out
 
 
-def test_exit_no_model_lms_available_with_downloads(capsys: pytest.CaptureFixture[str]) -> None:
+def test_exit_no_model_lms_available_load_failed(capsys: pytest.CaptureFixture[str]) -> None:
+    # When downloads exist but auto-load failed, show a manual fallback command.
     dm = DownloadedModel(path="/models/Qwen.gguf", identifier="Qwen2.5-Coder-7B")
     with (
         patch("lmcode.cli.chat.is_available", return_value=True),
@@ -117,24 +121,7 @@ def test_exit_no_model_lms_available_with_downloads(capsys: pytest.CaptureFixtur
     ):
         _exit_no_model()
     out = capsys.readouterr().out
-    # Should suggest lms load with the known identifier, not lms get
-    assert "lms load" in out
     assert "Qwen2.5-Coder-7B" in out
-    assert "lms get" not in out
-
-
-def test_exit_no_model_uses_filename_when_no_identifier(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    dm = DownloadedModel(path="/models/my-model.gguf", identifier=None)
-    with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.list_downloaded_models", return_value=[dm]),
-        pytest.raises(typer.Exit),
-    ):
-        _exit_no_model()
-    out = capsys.readouterr().out
-    assert "my-model.gguf" in out
 
 
 def test_exit_no_model_always_exits_1() -> None:
@@ -144,3 +131,55 @@ def test_exit_no_model_always_exits_1() -> None:
     ):
         _exit_no_model()
     assert exc_info.value.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# _auto_bring_up (#34)
+# ---------------------------------------------------------------------------
+
+
+def test_auto_bring_up_returns_true_when_server_start_succeeds() -> None:
+    with (
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(True, "")),
+        patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
+    ):
+        mock_time.sleep = lambda _: None
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
+    assert result is True
+
+
+def test_auto_bring_up_falls_back_to_daemon_when_server_start_fails() -> None:
+    # First _poll_with_animation (server start) always fails;
+    # second (daemon up) succeeds on first try.
+    probe_results = [(False, "")] * 4 + [(True, "")]
+    with (
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat.daemon_up"),
+        patch("lmcode.cli.chat._probe_lmstudio", side_effect=probe_results),
+        patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
+    ):
+        mock_time.sleep = lambda _: None
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
+    assert result is True
+
+
+def test_auto_bring_up_returns_false_when_nothing_starts() -> None:
+    with (
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat.daemon_up"),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(False, "")),
+        patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
+    ):
+        mock_time.sleep = lambda _: None
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
+    assert result is False

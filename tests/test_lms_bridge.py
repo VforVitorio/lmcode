@@ -17,8 +17,12 @@ from lmcode.lms_bridge import (
     is_available,
     list_downloaded_models,
     list_loaded_models,
+    load_model,
+    server_start,
+    server_stop,
     stream_model_log,
     suggest_load_commands,
+    unload_model,
 )
 
 # ---------------------------------------------------------------------------
@@ -118,6 +122,41 @@ def test_downloaded_model_from_dict_minimal() -> None:
     m = DownloadedModel.from_dict({"path": "/some/file.gguf"})
     assert m.path == "/some/file.gguf"
     assert m.identifier is None
+
+
+def test_downloaded_model_from_dict_uses_model_key_when_no_identifier() -> None:
+    """lms ls --json returns 'modelKey', not 'identifier'."""
+    data = {"path": "/models/file.gguf", "modelKey": "qwen2.5-coder-7b-instruct"}
+    m = DownloadedModel.from_dict(data)
+    assert m.identifier == "qwen2.5-coder-7b-instruct"
+    assert m.load_name() == "qwen2.5-coder-7b-instruct"
+
+
+def test_downloaded_model_load_name_uses_identifier_when_present() -> None:
+    m = DownloadedModel(path="/models/file.gguf", identifier="qwen2.5-coder-7b")
+    assert m.load_name() == "qwen2.5-coder-7b"
+
+
+def test_downloaded_model_load_name_strips_gguf_extension() -> None:
+    m = DownloadedModel(path="/models/qwen2.5-coder-7b-q4_k_m.gguf", identifier=None)
+    assert m.load_name() == "qwen2.5-coder-7b-q4_k_m"
+    assert ".gguf" not in m.load_name()
+
+
+def test_downloaded_model_load_name_handles_windows_path() -> None:
+    m = DownloadedModel(path="C:\\models\\my-model.gguf", identifier=None)
+    assert m.load_name() == "my-model"
+
+
+def test_downloaded_model_format_size() -> None:
+    m = DownloadedModel(path="/x", size_bytes=4_831_838_208)
+    assert "GB" in m.format_size()
+    assert m.format_size() != ""
+
+
+def test_downloaded_model_format_size_unknown() -> None:
+    m = DownloadedModel(path="/x", size_bytes=None)
+    assert m.format_size() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +310,139 @@ def test_suggest_load_commands_contains_quant() -> None:
     cmds = suggest_load_commands()
     get_cmd = next(c for c in cmds if "lms get" in c)
     assert "@" in get_cmd  # e.g. @q4_k_m
+
+
+# ---------------------------------------------------------------------------
+# load_model
+# ---------------------------------------------------------------------------
+
+
+def _ok_run() -> MagicMock:
+    m = MagicMock()
+    m.returncode = 0
+    return m
+
+
+def _fail_run() -> MagicMock:
+    m = MagicMock()
+    m.returncode = 1
+    return m
+
+
+def test_load_model_returns_true_on_success() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()):
+            assert load_model("Qwen2.5-Coder-7B") is True
+
+
+def test_load_model_returns_false_on_nonzero_exit() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_fail_run()):
+            assert load_model("bad-model") is False
+
+
+def test_load_model_returns_false_when_lms_absent() -> None:
+    with patch("shutil.which", return_value=None):
+        assert load_model("any") is False
+
+
+def test_load_model_passes_gpu_and_context_flags() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            load_model("M", gpu="max", context_length=8192)
+    cmd = mock_run.call_args[0][0]
+    assert "--gpu" in cmd
+    assert "max" in cmd
+    assert "--context-length" in cmd
+    assert "8192" in cmd
+
+
+def test_load_model_includes_yes_flag() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            load_model("M")
+    cmd = mock_run.call_args[0][0]
+    assert "--yes" in cmd
+
+
+def test_load_model_returns_false_on_timeout() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="lms", timeout=120)):
+            assert load_model("M") is False
+
+
+# ---------------------------------------------------------------------------
+# unload_model
+# ---------------------------------------------------------------------------
+
+
+def test_unload_model_by_identifier() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            assert unload_model("my-model") is True
+    cmd = mock_run.call_args[0][0]
+    assert "unload" in cmd
+    assert "my-model" in cmd
+
+
+def test_unload_model_all() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            assert unload_model(all_models=True) is True
+    cmd = mock_run.call_args[0][0]
+    assert "--all" in cmd
+
+
+def test_unload_model_returns_false_when_lms_absent() -> None:
+    with patch("shutil.which", return_value=None):
+        assert unload_model("x") is False
+
+
+def test_unload_model_returns_false_with_no_args() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        assert unload_model() is False
+
+
+# ---------------------------------------------------------------------------
+# server_start / server_stop
+# ---------------------------------------------------------------------------
+
+
+def test_server_start_returns_true_on_success() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()):
+            assert server_start() is True
+
+
+def test_server_start_passes_port() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            server_start(port=1234)
+    cmd = mock_run.call_args[0][0]
+    assert "--port" in cmd
+    assert "1234" in cmd
+
+
+def test_server_start_returns_false_when_lms_absent() -> None:
+    with patch("shutil.which", return_value=None):
+        assert server_start() is False
+
+
+def test_server_start_returns_false_on_failure() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_fail_run()):
+            assert server_start() is False
+
+
+def test_server_stop_returns_true_on_success() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()):
+            assert server_stop() is True
+
+
+def test_server_stop_returns_false_when_lms_absent() -> None:
+    with patch("shutil.which", return_value=None):
+        assert server_stop() is False
 
 
 # ---------------------------------------------------------------------------

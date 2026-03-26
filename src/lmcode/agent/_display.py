@@ -67,7 +67,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear conversation history"),
     ("/compact", "Summarise history to free context space"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
-    ("/model", "Show the current model"),
+    ("/model", "Show current model · /model list · /model load <id> · /model unload"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),

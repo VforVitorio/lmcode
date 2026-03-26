@@ -94,10 +94,32 @@ class DownloadedModel:
         """Build a DownloadedModel from a raw ``lms ls --json`` entry."""
         return cls(
             path=str(data.get("path", "")),
-            identifier=_str_or_none(data.get("identifier")),
+            # ``lms ls --json`` uses ``modelKey``; older/future versions may use ``identifier``
+            identifier=_str_or_none(data.get("identifier") or data.get("modelKey")),
             architecture=_str_or_none(data.get("architecture")),
             size_bytes=_int_or_none(data.get("sizeBytes")),
         )
+
+    def load_name(self) -> str:
+        """Return the name to pass to ``lms load``.
+
+        Uses the model identifier when available.  Falls back to the filename
+        without extension (e.g. ``qwen2.5-coder-7b-instruct-q4_k_m`` instead
+        of ``qwen2.5-coder-7b-instruct-q4_k_m.gguf``).
+        """
+        if self.identifier:
+            return self.identifier
+        basename = self.path.replace("\\", "/").split("/")[-1]
+        if basename.lower().endswith(".gguf"):
+            return basename[:-5]
+        return basename
+
+    def format_size(self) -> str:
+        """Return a human-readable size string like '4.5 GB' or '' if unknown."""
+        if self.size_bytes is None:
+            return ""
+        gb = self.size_bytes / (1024**3)
+        return f"{gb:.1f} GB"
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +190,142 @@ def stream_model_log() -> subprocess.Popen[str] | None:
         )
     except OSError:
         return None
+
+
+def load_model(
+    identifier: str,
+    gpu: str = "auto",
+    context_length: int | None = None,
+) -> bool:
+    """Load a model into LM Studio via ``lms load``.
+
+    Runs ``lms load <identifier> --yes [--gpu <gpu>]`` and waits up to 120 seconds
+    for the process to complete (loading large models takes time).
+
+    Args:
+        identifier: Model identifier as shown by ``lms ls``.
+        gpu: GPU offload strategy — ``"auto"``, ``"max"``, or a float string
+            between ``"0.0"`` and ``"1.0"``.
+        context_length: Optional override for the model's context window.
+
+    Returns:
+        ``True`` if ``lms load`` exited with code 0, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    cmd = ["lms", "load", identifier, "--yes"]
+    if gpu != "auto":
+        cmd += ["--gpu", gpu]
+    if context_length is not None:
+        cmd += ["--context-length", str(context_length)]
+    try:
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def unload_model(identifier: str | None = None, all_models: bool = False) -> bool:
+    """Unload a model (or all models) from LM Studio memory.
+
+    Runs ``lms unload <identifier>`` or ``lms unload --all``.
+
+    Args:
+        identifier: Model identifier to unload.  Ignored when *all_models* is
+            ``True``.
+        all_models: If ``True``, unload every loaded model (``lms unload --all``).
+
+    Returns:
+        ``True`` on success, ``False`` on any failure or when ``lms`` is absent.
+    """
+    if not is_available():
+        return False
+    if all_models:
+        cmd = ["lms", "unload", "--all"]
+    elif identifier:
+        cmd = ["lms", "unload", identifier]
+    else:
+        return False
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def server_start(port: int | None = None) -> bool:
+    """Start the LM Studio inference server via ``lms server start``.
+
+    Blocks until the server is ready (the ``lms`` process exits) or the 30-second
+    timeout is reached.
+
+    Args:
+        port: Optional port number to pass via ``--port``.
+
+    Returns:
+        ``True`` if the server started successfully, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    cmd = ["lms", "server", "start"]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def server_stop() -> bool:
+    """Stop the LM Studio inference server via ``lms server stop``.
+
+    Returns:
+        ``True`` on success, ``False`` on any failure or when ``lms`` is absent.
+    """
+    if not is_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["lms", "server", "stop"],
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def daemon_up() -> bool:
+    """Start LM Studio in headless (daemon) mode via ``lms daemon up``.
+
+    Launches the LM Studio daemon which includes the inference server.
+    The command returns once the daemon process has been started; callers
+    should poll ``_probe_lmstudio()`` to wait until the server is reachable.
+
+    Returns:
+        ``True`` if the command exited cleanly, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["lms", "daemon", "up"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def suggest_load_commands(model_name: str = "Qwen2.5-Coder-7B-Instruct") -> list[str]:

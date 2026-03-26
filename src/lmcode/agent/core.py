@@ -48,7 +48,7 @@ from lmcode.agent._noise import SDK_NOISE as _SDK_NOISE  # noqa: F401 — instal
 from lmcode.agent._prompt import make_session
 from lmcode.config.lmcode_md import read_lmcode_md
 from lmcode.config.settings import get_settings
-from lmcode.lms_bridge import stream_model_log
+from lmcode.lms_bridge import load_model, stream_model_log, unload_model
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
 from lmcode.ui.colors import (
@@ -285,7 +285,8 @@ class Agent:
         self._verbose: bool = True
         self._turn_count: int = 0
         self._compact_prompt: bool = False
-        self._model_ref: Any = None  # set after connecting; used by /compact
+        self._model_ref: Any = None  # set after connecting; used by /compact and /model load
+        self._client_ref: Any = None  # AsyncClient; set in run(); used by /model load
         self._raw_history: list[tuple[str, str]] = []  # (role, content) pairs
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
@@ -336,11 +337,6 @@ class Agent:
             self._raw_history.clear()
             self._ctx_warned = False
             console.print(f"[{TEXT_MUTED}]conversation cleared[/]\n")
-            return True
-
-        if cmd == "/model":
-            console.print(f"[{TEXT_MUTED}]current model: {self._model_display}[/]")
-            console.print(f"[{TEXT_MUTED}]to switch model, restart with: lmcode --model <id>[/]\n")
             return True
 
         if cmd == "/mode":
@@ -586,6 +582,135 @@ class Agent:
             console.print(f"\n[{TEXT_MUTED}]log stream stopped[/]\n")
 
     # ------------------------------------------------------------------
+    # /model
+    # ------------------------------------------------------------------
+
+    async def _do_model(self, raw: str) -> None:
+        """Handle the ``/model`` family of sub-commands.
+
+        Sub-commands:
+            ``/model``             — show current model (read-only).
+            ``/model list``        — table of downloaded + loaded models.
+            ``/model load <id>``   — load *id* via lms, reconnect SDK handle.
+            ``/model unload``      — unload the current model from memory.
+        """
+        parts = raw.strip().split()
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if not sub:
+            console.print(f"[{TEXT_MUTED}]current model: {self._model_display}[/]")
+            console.print(
+                f"[{TEXT_MUTED}]  /model list          — list downloaded models[/]\n"
+                f"[{TEXT_MUTED}]  /model load <id>     — switch to a different model[/]\n"
+                f"[{TEXT_MUTED}]  /model unload        — unload current model from memory[/]\n"
+            )
+            return
+
+        if sub == "list":
+            await self._model_list()
+            return
+
+        if sub == "load":
+            if len(parts) < 3:
+                console.print(f"[{ERROR}]usage: /model load <identifier>[/]\n")
+                return
+            await self._model_load(parts[2])
+            return
+
+        if sub == "unload":
+            await self._model_unload()
+            return
+
+        console.print(
+            f"[{ERROR}]unknown /model sub-command '{sub}'[/] — valid: list · load <id> · unload\n"
+        )
+
+    async def _model_list(self) -> None:
+        """Print a table of downloaded and currently loaded models."""
+        from lmcode.lms_bridge import list_downloaded_models, list_loaded_models
+
+        loaded = list_loaded_models()
+        downloaded = list_downloaded_models()
+
+        loaded_ids = {m.identifier for m in loaded if m.identifier}
+
+        console.print(f"\n[{ACCENT_BRIGHT}]downloaded models[/]")
+        if not downloaded:
+            console.print(f"  [{TEXT_MUTED}](none — run: lms get <model>)[/]")
+        else:
+            for m in downloaded:
+                mid = m.load_name()
+                tag = f" [{ACCENT}]● loaded[/]" if mid in loaded_ids else ""
+                size = f"  [{TEXT_MUTED}]{m.format_size()}[/]"
+                row = Text()
+                row.append(f"  {mid}", style=TEXT_MUTED if mid not in loaded_ids else ACCENT)
+                console.print(row, end="")
+                console.print(size, end="")
+                if tag:
+                    console.print(tag)
+                else:
+                    console.print()
+        console.print()
+
+    async def _model_load(self, identifier: str) -> None:
+        """Load *identifier* via lms and reconnect the SDK model handle."""
+        if self._client_ref is None:
+            console.print(f"[{ERROR}]not connected to LM Studio[/]\n")
+            return
+
+        console.print(f"[{TEXT_MUTED}]loading {identifier} …[/]")
+        with Live(
+            Spinner(_SPINNER, text=f" loading {identifier}…", style=ACCENT),
+            transient=True,
+            console=console,
+        ):
+            ok = await asyncio.to_thread(load_model, identifier)
+
+        if not ok:
+            console.print(
+                f"[{ERROR}]failed to load '{identifier}'[/] "
+                f"[{TEXT_MUTED}]— check the identifier with /model list[/]\n"
+            )
+            return
+
+        try:
+            new_model, resolved_id = await _get_model(self._client_ref, identifier)
+        except Exception as exc:
+            console.print(f"[{ERROR}]model loaded but SDK reconnect failed:[/] {exc}\n")
+            return
+
+        self._model_ref = new_model
+        self._model_display = resolved_id
+        self._max_file_bytes, self._ctx_len = await _compute_max_file_bytes(new_model, resolved_id)
+        self._chat = None
+        self._raw_history.clear()
+        self._ctx_warned = False
+
+        console.print(
+            f"[{ACCENT_BRIGHT}]switched to {resolved_id}[/] "
+            f"[{TEXT_MUTED}]— conversation history cleared[/]\n"
+        )
+
+    async def _model_unload(self) -> None:
+        """Unload the current model from LM Studio memory."""
+        if not self._model_display:
+            console.print(f"[{TEXT_MUTED}]no model to unload[/]\n")
+            return
+
+        console.print(
+            f"[{WARNING}]this will unload '{self._model_display}' "
+            "from memory — lmcode will stop working until you load another model.[/]"
+        )
+        console.print(f"[{TEXT_MUTED}]run /model load <id> to reload, or restart lmcode[/]\n")
+
+        ok = await asyncio.to_thread(unload_model, self._model_display)
+        if ok:
+            console.print(f"[{TEXT_MUTED}]unloaded {self._model_display}[/]\n")
+            self._model_ref = None
+        else:
+            console.print(f"[{ERROR}]unload failed — is lms installed?[/]\n")
+
+    # ------------------------------------------------------------------
     # _run_turn — single agent iteration
     # ------------------------------------------------------------------
 
@@ -735,6 +860,7 @@ class Agent:
 
         try:
             async with lms.AsyncClient() as client:
+                self._client_ref = client
                 model, resolved_id = await _get_model(client, self._model_id)
                 self._model_display = resolved_id
                 self._model_ref = model
@@ -772,6 +898,8 @@ class Agent:
                             await self._do_compact()
                         elif stripped == "/log":
                             await self._do_log()
+                        elif stripped.startswith("/model"):
+                            await self._do_model(stripped)
                         else:
                             self._handle_slash(stripped)
                         console.print(Rule(style=f"dim {ACCENT}"))
