@@ -263,8 +263,17 @@ def _startup_recovery() -> str:
     if not action or action == "exit":
         raise typer.Exit(0)
 
-    # --- model selection submenu ---
+    fg_muted = _ansi_fg(TEXT_MUTED)
+    fg_success = _ansi_fg(SUCCESS)
+    fg_error = _ansi_fg(ERROR)
+
+    # --- model selection submenu (fetch list with brief feedback) ---
+    sys.stdout.write(f"\n  {fg_muted}→ fetching model list…{_RESET}  ")
+    sys.stdout.flush()
     downloaded = list_downloaded_models()
+    sys.stdout.write(f"\r{' ' * 40}\r")
+    sys.stdout.flush()
+
     if not downloaded:
         _console.print(f"\n[{WARNING}]no models downloaded yet[/]")
         _console.print(f"[{TEXT_MUTED}]  → run: lms get <model-name>[/]\n")
@@ -276,15 +285,41 @@ def _startup_recovery() -> str:
     if not selected:
         raise typer.Exit(0)
 
-    # --- load ---
-    _console.print(f"\n[{TEXT_MUTED}]→ loading {selected}…[/]")
-    if not load_model(selected):
-        _console.print(f"[{ERROR}]failed to load '{selected}'[/]")
+    # --- load with animated dots (load_model blocks for up to 120 s) ---
+    import threading
+
+    result: list[bool] = []
+    thread = threading.Thread(target=lambda: result.append(load_model(selected)), daemon=True)
+    thread.start()
+
+    sys.stdout.write("\n")
+    sys.stdout.write(_HIDE_CURSOR)
+    sys.stdout.flush()
+    ok = False
+    try:
+        while thread.is_alive():
+            for frame in (".", "..", "..."):
+                sys.stdout.write(f"\r  {fg_muted}→ loading {selected}{frame}{_RESET}      ")
+                sys.stdout.flush()
+                time.sleep(1.0 / 3)
+                if not thread.is_alive():
+                    break
+        thread.join()
+        ok = result[0] if result else False
+        if ok:
+            sys.stdout.write(f"\r  {fg_success}✓ loaded {selected}{_RESET}              \n")
+        else:
+            sys.stdout.write(f"\r  {fg_error}failed to load '{selected}'{_RESET}              \n")
+        sys.stdout.flush()
+    finally:
+        sys.stdout.write(_SHOW_CURSOR)
+        sys.stdout.flush()
+
+    if not ok:
         _console.print(f"[{TEXT_MUTED}]  → verify with: lms load {selected}[/]")
         _console.print(f"[{TEXT_MUTED}]  → or load a model in LM Studio and run lmcode again[/]\n")
         raise typer.Exit(1)
 
-    _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]loaded {selected}[/]\n")
     return selected
 
 
