@@ -162,6 +162,36 @@ def _print_compact_banner(
     console.print(line2)
 
 
+def print_menu_header(version: str) -> None:
+    """Print the ASCII art logo and tagline before a startup menu.
+
+    Omits the LM Studio connection status row since that is not yet known
+    at the point where startup menus are shown.
+
+    Args:
+        version: lmcode version string shown in the tagline.
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    width = shutil.get_terminal_size((100, 24)).columns
+    console = Console(legacy_windows=False, width=min(width, 100))
+    if width >= 70:
+        content = Text(justify="center", no_wrap=True)
+        content.append_text(_build_art())
+        content.append("\n")
+        content.append("  local coding agent", style=TEXT_MUTED)
+        content.append("  ·  ", style=BORDER)
+        content.append(f"v{version}\n", style=TEXT_MUTED)
+        console.print(Panel(Align.center(content), border_style=ACCENT, padding=(1, 2)))
+    else:
+        line = Text()
+        line.append("  lmcode", style=f"bold {ACCENT}")
+        line.append("  ─►  ", style=f"bold {ACCENT_BRIGHT}")
+        line.append(f"local coding agent  ·  v{version}", style=TEXT_MUTED)
+        console.print(line)
+        console.print()
+
+
 def print_banner(
     version: str,
     model: str = "",

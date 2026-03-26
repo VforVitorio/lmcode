@@ -22,7 +22,7 @@ from lmcode.lms_bridge import (
     server_start,
     suggest_load_commands,
 )
-from lmcode.ui.banner import print_banner
+from lmcode.ui.banner import print_banner, print_menu_header
 from lmcode.ui.colors import (
     ACCENT,
     ERROR,
@@ -168,7 +168,17 @@ def _probe_lmstudio() -> tuple[bool, str]:
 
     Tries to list loaded models. Returns the first loaded model's identifier
     if available, empty string if the server is up but no model is loaded.
+
+    A socket pre-check with a 0.5 s timeout is used to avoid the multi-second
+    SDK connection timeout when the server is simply not running.
     """
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", 1234), timeout=0.5):
+            pass
+    except OSError:
+        return False, ""
     try:
         with lms.Client() as client:
             loaded = client.llm.list_loaded()
@@ -202,6 +212,7 @@ def _no_server_recovery() -> None:
     Offers to start LM Studio headlessly via ``lms daemon up``.
     Raises :class:`typer.Exit` if the user exits or the daemon fails to start.
     """
+    print_menu_header(__version__)
     action = _pick(
         "lmcode — LM Studio not running",
         [("start", "Start LM Studio (headless)"), ("exit", "Exit")],
@@ -250,6 +261,7 @@ def _startup_recovery() -> str:
     fails.
     """
     # --- main menu ---
+    print_menu_header(__version__)
     action = _pick(
         "lmcode — no model loaded",
         [("load", "Load a model"), ("exit", "Exit")],
