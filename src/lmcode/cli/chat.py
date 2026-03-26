@@ -83,8 +83,8 @@ def _read_key() -> str:
                 return "down"
         return "other"
     else:
-        import termios  # type: ignore[import-not-found]
-        import tty  # type: ignore[import-not-found]
+        import termios
+        import tty
 
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
