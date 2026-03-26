@@ -124,6 +124,14 @@ def test_downloaded_model_from_dict_minimal() -> None:
     assert m.identifier is None
 
 
+def test_downloaded_model_from_dict_uses_model_key_when_no_identifier() -> None:
+    """lms ls --json returns 'modelKey', not 'identifier'."""
+    data = {"path": "/models/file.gguf", "modelKey": "qwen2.5-coder-7b-instruct"}
+    m = DownloadedModel.from_dict(data)
+    assert m.identifier == "qwen2.5-coder-7b-instruct"
+    assert m.load_name() == "qwen2.5-coder-7b-instruct"
+
+
 def test_downloaded_model_load_name_uses_identifier_when_present() -> None:
     m = DownloadedModel(path="/models/file.gguf", identifier="qwen2.5-coder-7b")
     assert m.load_name() == "qwen2.5-coder-7b"
@@ -343,7 +351,8 @@ def test_load_model_passes_gpu_and_context_flags() -> None:
         with patch("subprocess.run", return_value=_ok_run()) as mock_run:
             load_model("M", gpu="max", context_length=8192)
     cmd = mock_run.call_args[0][0]
-    assert "--gpu=max" in cmd
+    assert "--gpu" in cmd
+    assert "max" in cmd
     assert "--context-length" in cmd
     assert "8192" in cmd
 

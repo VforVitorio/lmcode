@@ -94,7 +94,8 @@ class DownloadedModel:
         """Build a DownloadedModel from a raw ``lms ls --json`` entry."""
         return cls(
             path=str(data.get("path", "")),
-            identifier=_str_or_none(data.get("identifier")),
+            # ``lms ls --json`` uses ``modelKey``; older/future versions may use ``identifier``
+            identifier=_str_or_none(data.get("identifier") or data.get("modelKey")),
             architecture=_str_or_none(data.get("architecture")),
             size_bytes=_int_or_none(data.get("sizeBytes")),
         )
@@ -198,7 +199,7 @@ def load_model(
 ) -> bool:
     """Load a model into LM Studio via ``lms load``.
 
-    Runs ``lms load <identifier> --yes --gpu=<gpu>`` and waits up to 120 seconds
+    Runs ``lms load <identifier> --yes [--gpu <gpu>]`` and waits up to 120 seconds
     for the process to complete (loading large models takes time).
 
     Args:
@@ -212,14 +213,17 @@ def load_model(
     """
     if not is_available():
         return False
-    cmd = ["lms", "load", identifier, "--yes", f"--gpu={gpu}"]
+    cmd = ["lms", "load", identifier, "--yes"]
+    if gpu != "auto":
+        cmd += ["--gpu", gpu]
     if context_length is not None:
         cmd += ["--context-length", str(context_length)]
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=120,
         )
         return result.returncode == 0
@@ -293,6 +297,31 @@ def server_stop() -> bool:
             capture_output=True,
             text=True,
             timeout=_TIMEOUT,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def daemon_up() -> bool:
+    """Start LM Studio in headless (daemon) mode via ``lms daemon up``.
+
+    Launches the LM Studio daemon which includes the inference server.
+    The command returns once the daemon process has been started; callers
+    should poll ``_probe_lmstudio()`` to wait until the server is reachable.
+
+    Returns:
+        ``True`` if the command exited cleanly, ``False`` on any failure.
+    """
+    if not is_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["lms", "daemon", "up"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
         )
         return result.returncode == 0
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):

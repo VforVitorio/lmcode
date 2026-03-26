@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
 import lmstudio as lms
 import typer
-from prompt_toolkit.shortcuts import radiolist_dialog
-from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
 from rich.text import Text
 
@@ -15,6 +14,7 @@ from lmcode import __version__
 from lmcode.agent.core import run_chat
 from lmcode.config.settings import get_settings
 from lmcode.lms_bridge import (
+    daemon_up,
     is_available,
     list_downloaded_models,
     list_loaded_models,
@@ -25,12 +25,9 @@ from lmcode.lms_bridge import (
 from lmcode.ui.banner import print_banner
 from lmcode.ui.colors import (
     ACCENT,
-    BG_PRIMARY,
-    BG_SECONDARY,
     ERROR,
     SUCCESS,
     TEXT_MUTED,
-    TEXT_PRIMARY,
     WARNING,
 )
 
@@ -38,25 +35,132 @@ app = typer.Typer()
 
 _console = Console()
 
-#: How long to wait for the server to become reachable after ``lms server start``.
-_SERVER_START_TIMEOUT: int = 20
+#: Seconds to poll after ``lms server start`` before giving up.
+_SERVER_START_TIMEOUT: int = 5
 
-#: Seconds between connection retries while waiting for the server.
+#: Seconds to poll after ``lms daemon up`` before giving up.
+_DAEMON_START_TIMEOUT: int = 30
+
+#: Seconds between connection retries.
 _SERVER_POLL_INTERVAL: float = 1.0
 
-#: prompt_toolkit dialog style matching the lmcode Catppuccin palette.
-_DIALOG_STYLE = PTStyle.from_dict(
-    {
-        "dialog": f"bg:{BG_PRIMARY}",
-        "dialog.body": f"bg:{BG_PRIMARY} {TEXT_PRIMARY}",
-        "dialog frame.label": f"bg:{BG_SECONDARY} {ACCENT}",
-        "dialog.body radiolist": f"bg:{BG_PRIMARY}",
-        "dialog.body radiolist radio": TEXT_MUTED,
-        "dialog.body radiolist radio-selected": f"bold {ACCENT}",
-        "button": f"bg:{BG_SECONDARY} {TEXT_PRIMARY}",
-        "button.focused": f"bg:{ACCENT} {BG_PRIMARY} bold",
-    }
-)
+# ---------------------------------------------------------------------------
+# Arrow-key picker — pure ANSI, no prompt_toolkit Application
+# ---------------------------------------------------------------------------
+
+_RESET = "\033[0m"
+_HIDE_CURSOR = "\033[?25l"
+_SHOW_CURSOR = "\033[?25h"
+
+
+def _ansi_fg(hex_color: str) -> str:
+    """Convert ``#rrggbb`` to an ANSI 24-bit foreground escape sequence."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def _read_key() -> str:
+    """Read one keypress and return a normalised name.
+
+    Handles arrow keys, Enter, Escape, and Ctrl-C cross-platform.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        raw = msvcrt.getch()
+        if raw == b"\r":
+            return "enter"
+        if raw == b"\x1b":
+            return "escape"
+        if raw == b"\x03":
+            return "ctrl_c"
+        if raw in (b"\xe0", b"\x00"):
+            raw2 = msvcrt.getch()
+            if raw2 == b"H":
+                return "up"
+            if raw2 == b"P":
+                return "down"
+        return "other"
+    else:
+        import termios  # type: ignore[import-not-found]
+        import tty  # type: ignore[import-not-found]
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch in ("\r", "\n"):
+                return "enter"
+            if ch == "\x1b":
+                nxt = sys.stdin.read(1)
+                if nxt == "[":
+                    nxt2 = sys.stdin.read(1)
+                    if nxt2 == "A":
+                        return "up"
+                    if nxt2 == "B":
+                        return "down"
+                return "escape"
+            if ch == "\x03":
+                return "ctrl_c"
+            return "other"
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _pick(title: str, choices: list[tuple[str, str]]) -> str | None:
+    """Arrow-key list selector — returns selected key or None on cancel/Esc.
+
+    Renders a minimal text menu using direct ANSI escape codes so there are no
+    cursor-highlight artifacts from prompt_toolkit's Application renderer.
+    """
+    fg_accent = _ansi_fg(ACCENT)
+    fg_muted = _ansi_fg(TEXT_MUTED)
+    idx = [0]
+    # blank + title + blank + N choices + blank + hint = N+4 lines total
+    total_lines = len(choices) + 4
+
+    def draw(first: bool = False) -> None:
+        if not first:
+            sys.stdout.write(f"\033[{total_lines}A\033[J")
+        sys.stdout.write(f"\n  {fg_accent}{title}{_RESET}\n\n")
+        for i, (_, label) in enumerate(choices):
+            if i == idx[0]:
+                sys.stdout.write(f"  {fg_accent}>{_RESET} {label}\n")
+            else:
+                sys.stdout.write(f"    {fg_muted}{label}{_RESET}\n")
+        sys.stdout.write(f"\n  {fg_muted}↑↓ navigate  ·  Enter confirm  ·  Esc cancel{_RESET}")
+        sys.stdout.flush()
+
+    sys.stdout.write(_HIDE_CURSOR)
+    sys.stdout.flush()
+    try:
+        draw(first=True)
+        while True:
+            key = _read_key()
+            if key == "up":
+                idx[0] = max(0, idx[0] - 1)
+                draw()
+            elif key == "down":
+                idx[0] = min(len(choices) - 1, idx[0] + 1)
+                draw()
+            elif key == "enter":
+                sys.stdout.write(f"\033[{total_lines}A\033[J")
+                sys.stdout.flush()
+                return choices[idx[0]][0]
+            elif key in ("escape", "ctrl_c"):
+                sys.stdout.write(f"\033[{total_lines}A\033[J")
+                sys.stdout.flush()
+                return None
+    finally:
+        sys.stdout.write(_SHOW_CURSOR)
+        sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# LM Studio connectivity helpers
+# ---------------------------------------------------------------------------
 
 
 def _probe_lmstudio() -> tuple[bool, str]:
@@ -76,26 +180,62 @@ def _probe_lmstudio() -> tuple[bool, str]:
 
 
 def _try_start_server() -> bool:
-    """Attempt to auto-start the LM Studio inference server via ``lms server start``.
+    """Silently attempt to start the LM Studio inference server.
 
-    Only attempted when ``lms`` is on PATH.  Polls ``_probe_lmstudio()`` every
-    second for up to ``_SERVER_START_TIMEOUT`` seconds after the start command
-    returns.
-
-    Returns:
-        ``True`` if the server becomes reachable, ``False`` otherwise.
+    Runs ``lms server start`` and polls for up to ``_SERVER_START_TIMEOUT``
+    seconds.  Returns ``True`` if the server becomes reachable.
     """
     if not is_available():
         return False
-    _console.print(f"[{TEXT_MUTED}]→ starting LM Studio server via lms…[/]")
     server_start()
     for _ in range(_SERVER_START_TIMEOUT):
         connected, _ = _probe_lmstudio()
         if connected:
-            _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]LM Studio server is ready[/]")
             return True
         time.sleep(_SERVER_POLL_INTERVAL)
     return False
+
+
+def _no_server_recovery() -> None:
+    """Interactive menu when LM Studio is not running.
+
+    Offers to start LM Studio headlessly via ``lms daemon up``.
+    Raises :class:`typer.Exit` if the user exits or the daemon fails to start.
+    """
+    action = _pick(
+        "lmcode — LM Studio not running",
+        [("start", "Start LM Studio (headless)"), ("exit", "Exit")],
+    )
+    if not action or action == "exit":
+        raise typer.Exit(0)
+
+    fg_muted = _ansi_fg(TEXT_MUTED)
+    fg_success = _ansi_fg(SUCCESS)
+    fg_error = _ansi_fg(ERROR)
+
+    daemon_up()
+    sys.stdout.write("\n")
+    sys.stdout.write(_HIDE_CURSOR)
+    sys.stdout.flush()
+    try:
+        for _ in range(_DAEMON_START_TIMEOUT):
+            for frame in (".", "..", "..."):
+                sys.stdout.write(f"\r  {fg_muted}→ starting LM Studio{frame}{_RESET}      ")
+                sys.stdout.flush()
+                time.sleep(1.0 / 3)
+            connected, _ = _probe_lmstudio()
+            if connected:
+                sys.stdout.write(
+                    f"\r  {fg_success}✓ LM Studio started{_RESET}                    \n"
+                )
+                sys.stdout.flush()
+                return
+        sys.stdout.write(f"\r  {fg_error}LM Studio did not start in time{_RESET}\n")
+        sys.stdout.flush()
+    finally:
+        sys.stdout.write(_SHOW_CURSOR)
+        sys.stdout.flush()
+    raise typer.Exit(1)
 
 
 def _startup_recovery() -> str:
@@ -110,15 +250,10 @@ def _startup_recovery() -> str:
     fails.
     """
     # --- main menu ---
-    action = radiolist_dialog(
-        title="lmcode — no model loaded",
-        text="Use ↑↓ to navigate · Enter to confirm",
-        values=[
-            ("load", "Load a model"),
-            ("exit", "Exit"),
-        ],
-        style=_DIALOG_STYLE,
-    ).run()
+    action = _pick(
+        "lmcode — no model loaded",
+        [("load", "Load a model"), ("exit", "Exit")],
+    )
 
     if not action or action == "exit":
         raise typer.Exit(0)
@@ -131,12 +266,7 @@ def _startup_recovery() -> str:
         raise typer.Exit(1)
 
     model_values = [(m.load_name(), f"{m.load_name()}  {m.format_size()}") for m in downloaded]
-    selected = radiolist_dialog(
-        title="select a model",
-        text="Use ↑↓ to navigate · Enter to load · Esc to cancel",
-        values=model_values,
-        style=_DIALOG_STYLE,
-    ).run()
+    selected = _pick("select a model", model_values)
 
     if not selected:
         raise typer.Exit(0)
@@ -145,9 +275,8 @@ def _startup_recovery() -> str:
     _console.print(f"\n[{TEXT_MUTED}]→ loading {selected}…[/]")
     if not load_model(selected):
         _console.print(f"[{ERROR}]failed to load '{selected}'[/]")
-        _console.print(
-            f"[{TEXT_MUTED}]  → make sure LM Studio server is running (lms server start)[/]\n"
-        )
+        _console.print(f"[{TEXT_MUTED}]  → verify with: lms load {selected}[/]")
+        _console.print(f"[{TEXT_MUTED}]  → or load a model in LM Studio and run lmcode again[/]\n")
         raise typer.Exit(1)
 
     _console.print(f"[{SUCCESS}]✓[/] [{TEXT_MUTED}]loaded {selected}[/]\n")
@@ -223,14 +352,21 @@ def chat(
     connected, detected_model = _probe_lmstudio()
 
     if not connected:
-        # Try to auto-start the server before giving up (#34).
-        connected, detected_model = _probe_lmstudio() if _try_start_server() else (False, "")
-        if not connected:
+        if is_available():
+            # Quick silent attempt: start inference server if LM Studio is open (#34).
+            if _try_start_server():
+                connected, detected_model = _probe_lmstudio()
+            if not connected:
+                # LM Studio is not running — offer to start it via lms daemon up.
+                _no_server_recovery()
+                connected, detected_model = _probe_lmstudio()
+                if not connected:
+                    _exit_no_server(settings.lmstudio.base_url)
+        else:
             _exit_no_server(settings.lmstudio.base_url)
 
     if model == "auto" and not detected_model:
         if is_available():
-            # Show interactive recovery menu (#50).
             detected_model = _startup_recovery()
         else:
             _exit_no_model()
