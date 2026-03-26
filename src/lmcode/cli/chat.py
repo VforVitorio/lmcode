@@ -197,7 +197,8 @@ def _try_start_server() -> bool:
     """
     if not is_available():
         return False
-    server_start()
+    if not server_start():
+        return False  # lms server start failed — LM Studio likely not running
     for _ in range(_SERVER_START_TIMEOUT):
         connected, _ = _probe_lmstudio()
         if connected:
