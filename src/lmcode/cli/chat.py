@@ -203,6 +203,8 @@ def _auto_bring_up() -> bool:
     fg_success = _ansi_fg(SUCCESS)
     fg_error = _ansi_fg(ERROR)
 
+    import threading
+
     sys.stdout.write("\n")
     sys.stdout.write(_HIDE_CURSOR)
     sys.stdout.flush()
@@ -222,13 +224,13 @@ def _auto_bring_up() -> bool:
         return False
 
     try:
-        # Fast path: inference server start (works when LM Studio GUI is open).
-        server_start()
+        # Fast path: fire lms server start in background so animation starts immediately.
+        threading.Thread(target=server_start, daemon=True).start()
         if _poll_with_animation("starting LM Studio server", _SERVER_START_TIMEOUT):
             return True
 
         # Slow path: full headless daemon (LM Studio not running at all).
-        daemon_up()
+        threading.Thread(target=daemon_up, daemon=True).start()
         if _poll_with_animation("starting LM Studio", _DAEMON_START_TIMEOUT):
             return True
 
