@@ -189,65 +189,55 @@ def _probe_lmstudio() -> tuple[bool, str]:
         return False, ""
 
 
-def _try_start_server() -> bool:
-    """Silently attempt to start the LM Studio inference server.
+def _auto_bring_up() -> bool:
+    """Automatically bring up LM Studio and its inference server with animated feedback.
 
-    Runs ``lms server start`` and polls for up to ``_SERVER_START_TIMEOUT``
-    seconds.  Returns ``True`` if the server becomes reachable.
+    First tries ``lms server start`` (fast path when LM Studio GUI is open but
+    server is off), then falls back to ``lms daemon up`` (headless, no GUI).
+    Shows animated dots throughout so the user is never left looking at a frozen
+    terminal.
+
+    Returns ``True`` if the server becomes reachable, ``False`` otherwise.
     """
-    if not is_available():
-        return False
-    if not server_start():
-        return False  # lms server start failed — LM Studio likely not running
-    for _ in range(_SERVER_START_TIMEOUT):
-        connected, _ = _probe_lmstudio()
-        if connected:
-            return True
-        time.sleep(_SERVER_POLL_INTERVAL)
-    return False
-
-
-def _no_server_recovery() -> None:
-    """Interactive menu when LM Studio is not running.
-
-    Offers to start LM Studio headlessly via ``lms daemon up``.
-    Raises :class:`typer.Exit` if the user exits or the daemon fails to start.
-    """
-    print_menu_header(__version__)
-    action = _pick(
-        "lmcode — LM Studio not running",
-        [("start", "Start LM Studio (headless)"), ("exit", "Exit")],
-    )
-    if not action or action == "exit":
-        raise typer.Exit(0)
-
     fg_muted = _ansi_fg(TEXT_MUTED)
     fg_success = _ansi_fg(SUCCESS)
     fg_error = _ansi_fg(ERROR)
 
-    daemon_up()
     sys.stdout.write("\n")
     sys.stdout.write(_HIDE_CURSOR)
     sys.stdout.flush()
-    try:
-        for _ in range(_DAEMON_START_TIMEOUT):
+
+    def _poll_with_animation(label: str, max_rounds: int) -> bool:
+        """Animate *label* with cycling dots while polling.  Returns True on connect."""
+        for _ in range(max_rounds):
             for frame in (".", "..", "..."):
-                sys.stdout.write(f"\r  {fg_muted}→ starting LM Studio{frame}{_RESET}      ")
+                sys.stdout.write(f"\r  {fg_muted}→ {label}{frame}{_RESET}      ")
                 sys.stdout.flush()
                 time.sleep(1.0 / 3)
             connected, _ = _probe_lmstudio()
             if connected:
-                sys.stdout.write(
-                    f"\r  {fg_success}✓ LM Studio started{_RESET}                    \n"
-                )
+                sys.stdout.write(f"\r  {fg_success}✓ {label} ready{_RESET}              \n")
                 sys.stdout.flush()
-                return
+                return True
+        return False
+
+    try:
+        # Fast path: inference server start (works when LM Studio GUI is open).
+        server_start()
+        if _poll_with_animation("starting LM Studio server", _SERVER_START_TIMEOUT):
+            return True
+
+        # Slow path: full headless daemon (LM Studio not running at all).
+        daemon_up()
+        if _poll_with_animation("starting LM Studio", _DAEMON_START_TIMEOUT):
+            return True
+
         sys.stdout.write(f"\r  {fg_error}LM Studio did not start in time{_RESET}\n")
         sys.stdout.flush()
+        return False
     finally:
         sys.stdout.write(_SHOW_CURSOR)
         sys.stdout.flush()
-    raise typer.Exit(1)
 
 
 def _startup_recovery() -> str:
@@ -366,15 +356,12 @@ def chat(
 
     if not connected:
         if is_available():
-            # Quick silent attempt: start inference server if LM Studio is open (#34).
-            if _try_start_server():
-                connected, detected_model = _probe_lmstudio()
+            # Auto-start LM Studio (server or daemon) with animated feedback (#34).
+            if not _auto_bring_up():
+                _exit_no_server(settings.lmstudio.base_url)
+            connected, detected_model = _probe_lmstudio()
             if not connected:
-                # LM Studio is not running — offer to start it via lms daemon up.
-                _no_server_recovery()
-                connected, detected_model = _probe_lmstudio()
-                if not connected:
-                    _exit_no_server(settings.lmstudio.base_url)
+                _exit_no_server(settings.lmstudio.base_url)
         else:
             _exit_no_server(settings.lmstudio.base_url)
 

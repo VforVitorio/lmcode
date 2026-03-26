@@ -8,9 +8,9 @@ import pytest
 import typer
 
 from lmcode.cli.chat import (
+    _auto_bring_up,
     _build_model_meta,
     _exit_no_model,
-    _try_start_server,
 )
 from lmcode.lms_bridge import DownloadedModel, LoadedModel
 
@@ -134,34 +134,52 @@ def test_exit_no_model_always_exits_1() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _try_start_server (#34)
+# _auto_bring_up (#34)
 # ---------------------------------------------------------------------------
 
 
-def test_try_start_server_returns_false_when_lms_absent() -> None:
-    with patch("lmcode.cli.chat.is_available", return_value=False):
-        assert _try_start_server() is False
-
-
-def test_try_start_server_returns_true_when_server_becomes_reachable() -> None:
+def test_auto_bring_up_returns_true_when_server_start_succeeds() -> None:
     with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.server_start", return_value=True),
-        patch("lmcode.cli.chat._probe_lmstudio", return_value=(True, "MyModel")),
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(True, "")),
         patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
     ):
         mock_time.sleep = lambda _: None
-        result = _try_start_server()
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
     assert result is True
 
 
-def test_try_start_server_returns_false_when_server_never_responds() -> None:
+def test_auto_bring_up_falls_back_to_daemon_when_server_start_fails() -> None:
+    # First _poll_with_animation (server start) always fails;
+    # second (daemon up) succeeds on first try.
+    probe_results = [(False, "")] * 4 + [(True, "")]
     with (
-        patch("lmcode.cli.chat.is_available", return_value=True),
-        patch("lmcode.cli.chat.server_start", return_value=False),
-        patch("lmcode.cli.chat._probe_lmstudio", return_value=(False, "")),
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat.daemon_up"),
+        patch("lmcode.cli.chat._probe_lmstudio", side_effect=probe_results),
         patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
     ):
         mock_time.sleep = lambda _: None
-        result = _try_start_server()
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
+    assert result is True
+
+
+def test_auto_bring_up_returns_false_when_nothing_starts() -> None:
+    with (
+        patch("lmcode.cli.chat.server_start"),
+        patch("lmcode.cli.chat.daemon_up"),
+        patch("lmcode.cli.chat._probe_lmstudio", return_value=(False, "")),
+        patch("lmcode.cli.chat.time") as mock_time,
+        patch("lmcode.cli.chat.sys") as mock_sys,
+    ):
+        mock_time.sleep = lambda _: None
+        mock_sys.stdout.write = lambda _: None
+        mock_sys.stdout.flush = lambda: None
+        result = _auto_bring_up()
     assert result is False
