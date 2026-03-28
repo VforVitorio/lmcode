@@ -826,6 +826,35 @@ class Agent:
             console.print(f"[{ERROR}]unload failed — is lms installed?[/]\n")
 
     # ------------------------------------------------------------------
+    # Response rendering
+    # ------------------------------------------------------------------
+
+    async def _reveal_markdown(self, text: str) -> None:
+        """Render *text* as Markdown, revealing it line by line.
+
+        Waits for the full LLM response before starting so the Markdown
+        parser always sees complete syntax (closed code fences, matched
+        bold markers, etc.).  Uses a :class:`~rich.live.Live` display that
+        accumulates lines at ~12 ms each — long enough to feel like smooth
+        reveal, fast enough that even 100-line responses finish in ~1 s.
+        Empty lines and lines consisting only of whitespace are shown
+        immediately (no sleep) to avoid stuttering on blank separators.
+        """
+        lines = text.splitlines(keepends=True)
+        accumulated = ""
+        with Live(
+            Markdown(" "),
+            console=console,
+            refresh_per_second=30,
+            transient=False,
+        ) as live:
+            for line in lines:
+                accumulated += line
+                live.update(Markdown(accumulated))
+                if line.strip():
+                    await asyncio.sleep(0.012)
+
+    # ------------------------------------------------------------------
     # _run_turn — single agent iteration
     # ------------------------------------------------------------------
 
@@ -849,10 +878,6 @@ class Agent:
         # Spinner base label (without animated-dots suffix).
         # Standard values: "thinking" | "working" | "finishing" | "tool /path"
         active_base: list[str] = ["thinking"]
-        # Accumulated fragment text for the current prediction round.
-        # Cleared when a tool call is detected so only final-response text streams.
-        fragment_buffer: list[str] = [""]
-        in_tool_round: list[bool] = [False]
 
         def _on_message(msg: Any) -> None:
             """Drive the spinner state machine and capture assistant text.
@@ -863,8 +888,6 @@ class Agent:
               assistant content   → appended to *captured* for display
             """
             if hasattr(msg, "tool_calls") and msg.tool_calls:
-                in_tool_round[0] = True
-                fragment_buffer[0] = ""
                 for tc in msg.tool_calls:
                     path = (tc.arguments or {}).get("path", "")
                     if path:
@@ -872,8 +895,6 @@ class Agent:
                     else:
                         active_base[0] = "working"
             elif getattr(msg, "role", None) == "tool":
-                in_tool_round[0] = False
-                fragment_buffer[0] = ""
                 active_base[0] = "finishing"
             elif hasattr(msg, "content") and hasattr(msg, "role"):
                 parts = msg.content
@@ -893,11 +914,8 @@ class Agent:
         tok_count: list[int] = [0]
 
         def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Accumulate fragment text for streaming display; count tokens for spinner."""
+            """Count generated tokens for the spinner label."""
             tok_count[0] += 1
-            frag_text = getattr(fragment, "content", None)
-            if frag_text and not in_tool_round[0]:
-                fragment_buffer[0] += frag_text
 
         tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
 
@@ -905,11 +923,7 @@ class Agent:
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
 
         async def _keepalive() -> None:
-            """Update the Live display every 100 ms.
-
-            Shows an animated spinner with tips while the model thinks or calls
-            tools.  Switches to a streaming :class:`~rich.markdown.Markdown` block
-            once fragment text starts accumulating (i.e. the final response round).
+            """Update the spinner label every 100 ms; animate dots; rotate tips every ~8 s.
 
             Runs on the main event loop alongside ``model.act()``.  Gets CPU time
             whenever the SDK yields back to the loop during async HTTP prefill.
@@ -919,31 +933,26 @@ class Agent:
             tick = 0
             while not stop_evt.is_set():
                 if live is not None:
-                    streaming_text = fragment_buffer[0]
-                    if streaming_text and not in_tool_round[0]:
-                        # Switch Live display to streaming markdown once text arrives.
-                        live.update(Markdown(streaming_text))
+                    if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
+                        tip_idx = (tip_idx + 1) % len(shuffled_tips)
+                    if tick % 3 == 0:
+                        dot_idx = (dot_idx + 1) % len(_DOTS)
+                    base = active_base[0]
+                    is_word = base in ("thinking", "working", "finishing")
+                    if is_word:
+                        dots = _DOTS[dot_idx]
+                        tok = tok_count[0]
+                        label = (
+                            f" {base}{dots}  {tok} tok"
+                            if base == "thinking" and tok > 0
+                            else f" {base}{dots}"
+                        )
                     else:
-                        if shuffled_tips and tick > 0 and tick % _TIP_ROTATE_TICKS == 0:
-                            tip_idx = (tip_idx + 1) % len(shuffled_tips)
-                        if tick % 3 == 0:
-                            dot_idx = (dot_idx + 1) % len(_DOTS)
-                        base = active_base[0]
-                        is_word = base in ("thinking", "working", "finishing")
-                        if is_word:
-                            dots = _DOTS[dot_idx]
-                            tok = tok_count[0]
-                            label = (
-                                f" {base}{dots}  {tok} tok"
-                                if base == "thinking" and tok > 0
-                                else f" {base}{dots}"
-                            )
-                        else:
-                            label = f" {base}"
-                        rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
-                        if shuffled_tips:
-                            rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
-                        live.update(RenderGroup(*rows))
+                        label = f" {base}"
+                    rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
+                    if shuffled_tips:
+                        rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
+                    live.update(RenderGroup(*rows))
                 tick += 1
                 await asyncio.sleep(0.1)
 
@@ -1084,7 +1093,7 @@ class Agent:
                     header.append("\nlmcode", style=ACCENT_BRIGHT)
                     header.append("  ›")
                     console.print(header, highlight=False)
-                    console.print(Markdown(response))
+                    await self._reveal_markdown(response)
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
