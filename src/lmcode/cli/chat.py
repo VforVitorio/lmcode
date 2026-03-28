@@ -256,7 +256,7 @@ def _startup_recovery() -> str:
     # --- main menu ---
     print_menu_header(__version__)
     action = _pick(
-        "lmcode — no model loaded",
+        "Welcome to lmcode  ─►  no model loaded yet",
         [("load", "Load a model"), ("exit", "Exit")],
     )
 

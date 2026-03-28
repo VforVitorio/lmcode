@@ -2,7 +2,7 @@
 
 This document tracks the planned direction of lmcode. It is a living document — priorities may shift as the project evolves and community feedback comes in.
 
-> Current status: **v0.6.1, active development** — core agent loop is production-quality; focus is now on UX polish, permission enforcement, and MCP/plugin ecosystem.
+> Current status: **v0.7.0, active development** — core agent loop is production-quality; focus is now on UX polish, permission enforcement, and MCP/plugin ecosystem.
 
 ---
 
@@ -12,7 +12,7 @@ This document tracks the planned direction of lmcode. It is a living document �
 - [x] Connect to LM Studio local server via official Python SDK
 - [x] Agent loop using `model.act()` with tool calling
 - [x] Auto-detect running model (no manual config needed)
-- [ ] Streaming output (tokens printed progressively) — see #56
+- [x] Streaming output (tokens printed progressively) — #56
 - [ ] `max_rounds` safety limit
 
 **Built-in tools**
@@ -26,7 +26,7 @@ This document tracks the planned direction of lmcode. It is a living document �
 - [x] `lmcode chat` — interactive chat session
 - [x] `lmcode config list/get/set`
 - [ ] `lmcode run "<task>"` — one-shot task execution
-- [ ] `lmcode --model <id>` — override model mid-session (see #19)
+- [x] `/model load <id>` — switch model mid-session (#19)
 
 **Config**
 - [x] `~/.config/lmcode/config.toml` — global config
@@ -38,7 +38,7 @@ This document tracks the planned direction of lmcode. It is a living document �
 
 ---
 
-## v0.6.x — Stability & polish (current)
+## v0.6.x — Stability & polish ✅ (shipped)
 
 - [x] Ctrl+C interrupt mid-generation (#69)
 - [x] Syntax-highlighted diff blocks for `write_file` (#68)
@@ -47,8 +47,19 @@ This document tracks the planned direction of lmcode. It is a living document �
 - [x] `agent/core.py` split into focused submodules (maintainability)
 - [x] `write_file` mixed newline unescape fix (Qwen 7B compatibility)
 - [x] Full test coverage for display and noise modules
-- [ ] **Interactive permission UI** — diff + confirmation for `ask` mode (#40)
-- [ ] **Streaming Markdown** — progressive token rendering (#56)
+
+---
+
+## v0.7.x — UX polish (current)
+
+- [x] **Model switching mid-session** — `/model list · load · unload` (#19)
+- [x] **Auto-start LM Studio** — `lms server start` → `lms daemon up` with animated dots (#34, #85)
+- [x] **Interactive model picker** — arrow-key menu on startup when no model loaded (#50)
+- [x] **ASCII art in startup menus** — banner shown above every startup menu (#86)
+- [x] **Streaming Markdown** — response tokens stream progressively; final output rendered as Markdown (#56)
+- [x] **Inference parameter control** — `/temp` and `/params set` slash commands (#18)
+- [x] **Friendly startup messages** — welcoming tone in startup menus (#87)
+- [ ] **Interactive permission UI** — diff view + arrow-key confirmation for `ask` mode (#40)
 
 ---
 
