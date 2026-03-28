@@ -23,6 +23,7 @@ import lmstudio as lms
 from rich.align import Align
 from rich.console import Group as RenderGroup
 from rich.live import Live
+from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
@@ -296,6 +297,7 @@ class Agent:
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
+        self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
 
     # ------------------------------------------------------------------
     # Chat initialisation
@@ -418,7 +420,118 @@ class Agent:
             console.print(f"[{TEXT_MUTED}]lmcode {__version__}[/]\n")
             return True
 
+        if cmd == "/temp":
+            return self._handle_temp(parts)
+
+        if cmd == "/params":
+            return self._handle_params(parts)
+
         console.print(f"[{ERROR}]unknown command '{cmd}'[/] — type /help for the list\n")
+        return True
+
+    def _handle_temp(self, parts: list[str]) -> bool:
+        """Handle ``/temp [value|reset]`` — show or set the sampling temperature.
+
+        ``/temp``         — show the current temperature (or ``default`` if unset).
+        ``/temp <float>`` — set temperature (must be between 0.0 and 2.0).
+        ``/temp reset``   — clear the override and revert to LM Studio default.
+        """
+        if len(parts) == 1:
+            current = self._inference_config.get("temperature")
+            if current is None:
+                console.print(f"[{TEXT_MUTED}]temperature: default (set by LM Studio)[/]\n")
+            else:
+                console.print(f"[{TEXT_MUTED}]temperature: {current}[/]\n")
+            return True
+
+        arg = parts[1].lower()
+        if arg == "reset":
+            self._inference_config.pop("temperature", None)
+            console.print(f"[{TEXT_MUTED}]temperature reset to default[/]\n")
+            return True
+
+        try:
+            value = float(arg)
+        except ValueError:
+            console.print(
+                f"[{ERROR}]invalid temperature '{arg}'[/] "
+                f"[{TEXT_MUTED}]— use a number between 0.0 and 2.0[/]\n"
+            )
+            return True
+
+        if not 0.0 <= value <= 2.0:
+            console.print(f"[{ERROR}]temperature must be between 0.0 and 2.0[/] (got {value})\n")
+            return True
+
+        self._inference_config["temperature"] = value
+        console.print(f"[{TEXT_MUTED}]temperature set to {value}[/]\n")
+        return True
+
+    def _handle_params(self, parts: list[str]) -> bool:
+        """Handle ``/params`` and ``/params set <key> <value>`` — show or update inference params.
+
+        ``/params``                 — show all current inference parameter overrides.
+        ``/params set <key> <val>`` — set an inference parameter.
+        ``/params reset``           — clear all overrides.
+
+        Supported keys: ``temperature``, ``maxTokens``, ``topP``, ``topKSampling``,
+        ``minPSampling``.
+        """
+        _VALID_PARAMS = {
+            "temperature": float,
+            "maxTokens": int,
+            "topP": float,
+            "topKSampling": int,
+            "minPSampling": float,
+        }
+
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if not sub or sub == "list":
+            console.print(f"\n[{ACCENT_BRIGHT}]inference params[/]")
+            if not self._inference_config:
+                console.print(f"  [{TEXT_MUTED}](all defaults — no overrides set)[/]")
+            else:
+                for k, v in self._inference_config.items():
+                    row = Text()
+                    row.append(f"  {k:<18}", style=TEXT_MUTED)
+                    row.append(str(v))
+                    console.print(row)
+            console.print(f"\n  [{TEXT_MUTED}]supported: {', '.join(_VALID_PARAMS)}[/]")
+            console.print(f"  [{TEXT_MUTED}]/params set temperature 0.7  ·  /params reset[/]\n")
+            return True
+
+        if sub == "reset":
+            self._inference_config.clear()
+            console.print(f"[{TEXT_MUTED}]all inference params reset to defaults[/]\n")
+            return True
+
+        if sub == "set":
+            if len(parts) < 4:
+                console.print(f"[{ERROR}]usage: /params set <key> <value>[/]\n")
+                return True
+            key = parts[2]
+            raw_val = parts[3]
+            if key not in _VALID_PARAMS:
+                valid = ", ".join(_VALID_PARAMS)
+                console.print(f"[{ERROR}]unknown param '{key}'[/] — valid: {valid}\n")
+                return True
+            try:
+                value: int | float = _VALID_PARAMS[key](raw_val)
+            except ValueError:
+                console.print(
+                    f"[{ERROR}]invalid value '{raw_val}' for {key}[/] "
+                    f"[{TEXT_MUTED}]— expected {_VALID_PARAMS[key].__name__}[/]\n"
+                )
+                return True
+            self._inference_config[key] = value
+            console.print(f"[{TEXT_MUTED}]{key} set to {value}[/]\n")
+            return True
+
+        console.print(
+            f"[{ERROR}]unknown /params sub-command '{sub}'[/] "
+            f"[{TEXT_MUTED}]— use: /params · /params set <key> <val> · /params reset[/]\n"
+        )
         return True
 
     def _print_tokens(self) -> None:
@@ -450,9 +563,11 @@ class Agent:
         """Print current session state for the ``/status`` command."""
         ctx_line = _ctx_usage_line(self._last_prompt_tokens, self._ctx_len or 0)
         console.print(f"\n[{ACCENT_BRIGHT}]session status[/]")
+        temp_display = str(self._inference_config.get("temperature", "default"))
         status_rows: list[tuple[str, str]] = [
             ("model", self._model_display or "(none)"),
             ("mode", self._mode),
+            ("temperature", temp_display),
             ("verbose", "on" if self._verbose else "off"),
             ("tips", "on" if self._show_tips else "off"),
             ("stats", "on" if self._show_stats else "off"),
@@ -711,6 +826,35 @@ class Agent:
             console.print(f"[{ERROR}]unload failed — is lms installed?[/]\n")
 
     # ------------------------------------------------------------------
+    # Response rendering
+    # ------------------------------------------------------------------
+
+    async def _reveal_markdown(self, text: str) -> None:
+        """Render *text* as Markdown, revealing it line by line.
+
+        Waits for the full LLM response before starting so the Markdown
+        parser always sees complete syntax (closed code fences, matched
+        bold markers, etc.).  Uses a :class:`~rich.live.Live` display that
+        accumulates lines at ~12 ms each — long enough to feel like smooth
+        reveal, fast enough that even 100-line responses finish in ~1 s.
+        Empty lines and lines consisting only of whitespace are shown
+        immediately (no sleep) to avoid stuttering on blank separators.
+        """
+        lines = text.splitlines(keepends=True)
+        accumulated = ""
+        with Live(
+            Markdown(" "),
+            console=console,
+            refresh_per_second=30,
+            transient=False,
+        ) as live:
+            for line in lines:
+                accumulated += line
+                live.update(Markdown(accumulated))
+                if line.strip():
+                    await asyncio.sleep(0.012)
+
+    # ------------------------------------------------------------------
     # _run_turn — single agent iteration
     # ------------------------------------------------------------------
 
@@ -817,6 +961,7 @@ class Agent:
             act_result = await model.act(
                 chat,
                 tools=tools,
+                config=self._inference_config if self._inference_config else None,
                 on_message=_on_message,
                 on_prediction_completed=_on_prediction_completed,
                 on_prediction_fragment=_on_fragment,
@@ -944,11 +1089,11 @@ class Agent:
 
                     self._raw_history.append(("assistant", response))
 
-                    msg = Text()
-                    msg.append("\nlmcode", style=ACCENT_BRIGHT)
-                    msg.append("  › ")
-                    msg.append(response)
-                    console.print(msg, highlight=False)
+                    header = Text()
+                    header.append("\nlmcode", style=ACCENT_BRIGHT)
+                    header.append("  ›")
+                    console.print(header, highlight=False)
+                    await self._reveal_markdown(response)
                     if stats and self._show_stats:
                         console.print(Align.right(Text(stats, style=f"dim {ACCENT}")))
                     console.print()
