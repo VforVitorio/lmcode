@@ -36,9 +36,10 @@ from rich.console import Group as RenderGroup
 from rich.markup import escape as _escape
 from rich.panel import Panel as _Panel
 from rich.rule import Rule
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.text import Text
+from rich.text import Span, Text
 
 from lmcode.ui.colors import (
     ACCENT,
@@ -273,7 +274,7 @@ def _print_tool_call(name: str, args: dict[str, Any]) -> None:
 
 
 def _render_diff_sidebyside(
-    old_lines: list[str], new_lines: list[str], max_rows: int = 50
+    old_lines: list[str], new_lines: list[str], filename: str = "", max_rows: int = 50
 ) -> tuple[Table, int, int]:
     """Build a side-by-side diff table and return ``(table, n_added, n_removed)``.
 
@@ -282,9 +283,7 @@ def _render_diff_sidebyside(
     subtle violet-tinted neutral background to keep the panel cohesive.
     """
     _EQ_BG = "#1c1a2e"  # unchanged — violet-tinted neutral
-    _DEL_FG = "#f38ba8"  # Catppuccin Mocha rose
     _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon
-    _ADD_FG = "#a6e3a1"  # Catppuccin Mocha green
     _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
     _SEP = Text("│", style=f"dim {ACCENT}")
 
@@ -292,6 +291,33 @@ def _render_diff_sidebyside(
     table.add_column(ratio=1, no_wrap=True, overflow="fold")
     table.add_column(width=1, no_wrap=True)  # separator
     table.add_column(ratio=1, no_wrap=True, overflow="fold")
+
+    lexer_name = Syntax.guess_lexer(filename, code="".join(old_lines)) if filename else "text"
+
+    old_text_obj = Syntax(
+        "".join(old_lines), lexer_name, theme="one-dark", background_color="default"
+    ).highlight("".join(old_lines))
+    new_text_obj = Syntax(
+        "".join(new_lines), lexer_name, theme="one-dark", background_color="default"
+    ).highlight("".join(new_lines))
+
+    old_hlt_lines = old_text_obj.split("\n")
+    new_hlt_lines = new_text_obj.split("\n")
+
+    def _style_line(line_text: Text, bg_color: str, is_empty: bool = False) -> Text:
+        line_text = line_text.copy()
+        if is_empty:
+            return Text("", style=Style(bgcolor=bg_color))
+
+        line_text.style = Style(bgcolor=bg_color)
+        new_spans = []
+        for span in line_text.spans:
+            if isinstance(span.style, str):
+                new_spans.append(Span(span.start, span.end, f"on {bg_color}"))
+            else:
+                new_spans.append(Span(span.start, span.end, span.style + Style(bgcolor=bg_color)))
+        line_text.spans = new_spans
+        return line_text
 
     added = removed = rows = 0
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
@@ -303,37 +329,56 @@ def _render_diff_sidebyside(
         if rows >= max_rows:
             break
         if op == "equal":
-            for old, new in zip(old_lines[i1:i2], new_lines[j1:j2], strict=False):
-                _row(
-                    Text(old.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
-                    Text(new.rstrip("\n"), style=f"#abb2bf on {_EQ_BG}"),
+            for i in range(i2 - i1):
+                old_len = len(old_hlt_lines)
+                new_len = len(new_hlt_lines)
+                left = (
+                    _style_line(old_hlt_lines[i1 + i], _EQ_BG)
+                    if i1 + i < old_len
+                    else Text("", style=Style(bgcolor=_EQ_BG))
                 )
+                right = (
+                    _style_line(new_hlt_lines[j1 + i], _EQ_BG)
+                    if j1 + i < new_len
+                    else Text("", style=Style(bgcolor=_EQ_BG))
+                )
+                _row(left, right)
                 rows += 1
         elif op == "replace":
             old_chunk = old_lines[i1:i2]
             new_chunk = new_lines[j1:j2]
             for i in range(max(len(old_chunk), len(new_chunk))):
-                _row(
-                    Text(
-                        old_chunk[i].rstrip("\n") if i < len(old_chunk) else "",
-                        style=f"{_DEL_FG} on {_DEL_BG}",
-                    ),
-                    Text(
-                        new_chunk[i].rstrip("\n") if i < len(new_chunk) else "",
-                        style=f"{_ADD_FG} on {_ADD_BG}",
-                    ),
-                )
+                if i < len(old_chunk) and i1 + i < len(old_hlt_lines):
+                    left = _style_line(old_hlt_lines[i1 + i], _DEL_BG)
+                else:
+                    left = _style_line(Text(""), _DEL_BG, is_empty=True)
+
+                if i < len(new_chunk) and j1 + i < len(new_hlt_lines):
+                    right = _style_line(new_hlt_lines[j1 + i], _ADD_BG)
+                else:
+                    right = _style_line(Text(""), _ADD_BG, is_empty=True)
+                _row(left, right)
                 rows += 1
             removed += i2 - i1
             added += j2 - j1
         elif op == "delete":
-            for line in old_lines[i1:i2]:
-                _row(Text(line.rstrip("\n"), style=f"{_DEL_FG} on {_DEL_BG}"), Text(""))
+            for i in range(i2 - i1):
+                if i1 + i < len(old_hlt_lines):
+                    left = _style_line(old_hlt_lines[i1 + i], _DEL_BG)
+                else:
+                    left = _style_line(Text(""), _DEL_BG, is_empty=True)
+                right = _style_line(Text(""), _DEL_BG, is_empty=True)
+                _row(left, right)
                 rows += 1
             removed += i2 - i1
         elif op == "insert":
-            for line in new_lines[j1:j2]:
-                _row(Text(""), Text(line.rstrip("\n"), style=f"{_ADD_FG} on {_ADD_BG}"))
+            for i in range(j2 - j1):
+                left = _style_line(Text(""), _ADD_BG, is_empty=True)
+                if j1 + i < len(new_hlt_lines):
+                    right = _style_line(new_hlt_lines[j1 + i], _ADD_BG)
+                else:
+                    right = _style_line(Text(""), _ADD_BG, is_empty=True)
+                _row(left, right)
                 rows += 1
             added += j2 - j1
 
@@ -393,7 +438,9 @@ def _print_tool_result(
             else:
                 old_ls = old_content.splitlines(keepends=True)
                 new_ls = new_content.splitlines(keepends=True)
-                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(
+                    old_ls, new_ls, filename=path
+                )
                 if n_added == 0 and n_removed == 0:
                     console.print(
                         f"  [{SUCCESS}]✓  write_file[/] [{TEXT_MUTED}]{short} (no changes)[/]"
@@ -574,7 +621,9 @@ def _print_tool_preview(
             else:
                 old_ls = old_content.splitlines(keepends=True)
                 new_ls = new_content.splitlines(keepends=True)
-                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(
+                    old_ls, new_ls, filename=path
+                )
                 if n_added == 0 and n_removed == 0:
                     console.print(
                         f"  [{WARNING}]?  write_file[/] [{TEXT_MUTED}]{short} "
