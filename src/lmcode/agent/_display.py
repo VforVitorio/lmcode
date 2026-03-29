@@ -48,6 +48,7 @@ from lmcode.ui.colors import (
     SUCCESS,
     TEXT_MUTED,
     TEXT_SECONDARY,
+    WARNING,
 )
 
 # ---------------------------------------------------------------------------
@@ -547,3 +548,66 @@ __all__ = [
     "_render_diff_sidebyside",
     "_rewrite_as_history",
 ]
+
+
+def _print_tool_preview(
+    name: str,
+    args: dict[str, Any],
+    old_content: str | None = None,
+) -> None:
+    """Print a preview of a tool execution (before it happens) in ask mode."""
+    if name == "write_file":
+        path = args.get("path", "")
+        new_content = args.get("content", "")
+        if path and new_content:
+            short = pathlib.Path(path).name
+            ext = pathlib.Path(path).suffix.lstrip(".")
+            if old_content is None:
+                lines = new_content.splitlines()
+                n = min(len(lines), _WRITE_PREVIEW_LINES)
+                preview = "\n".join(lines[:n])
+                more = f"\n… ({len(lines) - n} more lines)" if len(lines) > n else ""
+                body: Any = Syntax(
+                    preview + more, ext or "text", theme="one-dark", line_numbers=True
+                )
+                title = f"[{TEXT_MUTED}]{short}[/]  [{WARNING}]new file (preview)[/]"
+            else:
+                old_ls = old_content.splitlines(keepends=True)
+                new_ls = new_content.splitlines(keepends=True)
+                diff_table, n_added, n_removed = _render_diff_sidebyside(old_ls, new_ls)
+                if n_added == 0 and n_removed == 0:
+                    console.print(
+                        f"  [{WARNING}]?  write_file[/] [{TEXT_MUTED}]{short} "
+                        "(no changes - preview)[/]"
+                    )
+                    return
+                parts = []
+                if n_added:
+                    parts.append(f"[{SUCCESS}]+{n_added}[/]")
+                if n_removed:
+                    parts.append(f"[{ERROR}]-{n_removed}[/]")
+                title = f"[{TEXT_MUTED}]{short}[/]  {' '.join(parts)} [{WARNING}](preview)[/]"
+                body = diff_table
+            console.print(
+                _Panel(body, title=title, border_style=WARNING, box=box.ROUNDED, padding=(0, 1))
+            )
+            return
+
+    if name == "run_shell":
+        cmd = args.get("command", "")
+        if cmd:
+            in_grid = Table.grid(padding=(0, 1))
+            in_grid.add_column(style=f"bold {WARNING}", width=3, no_wrap=True)
+            in_grid.add_column(style=TEXT_SECONDARY)
+            in_grid.add_row("IN", _escape(cmd))
+            title = f"[{WARNING}]run_shell (preview)[/]"
+            console.print(
+                _Panel(
+                    in_grid,
+                    title=title,
+                    border_style=WARNING,
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
+            )
+            return

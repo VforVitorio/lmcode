@@ -41,6 +41,7 @@ from lmcode.agent._display import (
     _print_log_event,
     _print_startup_tip,
     _print_tool_call,
+    _print_tool_preview,
     _print_tool_result,
     _rewrite_as_history,
     console,
@@ -52,6 +53,7 @@ from lmcode.config.settings import get_settings
 from lmcode.lms_bridge import load_model, stream_model_log, unload_model
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 from lmcode.tools.registry import get_all
+from lmcode.ui._interactive_prompt import display_interactive_approval
 from lmcode.ui.colors import (
     ACCENT,
     ACCENT_BRIGHT,
@@ -298,6 +300,7 @@ class Agent:
         self._max_file_bytes: int = get_settings().agent.max_file_bytes
         self._show_tips: bool = get_settings().ui.show_tips
         self._show_stats: bool = get_settings().ui.show_stats
+        self._always_allowed_tools: set[str] = set()
         self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
 
     # ------------------------------------------------------------------
@@ -896,6 +899,53 @@ class Agent:
     # _run_turn — single agent iteration
     # ------------------------------------------------------------------
 
+    def _wrap_tool(self, fn: Any) -> Any:
+        _params = list(inspect.signature(fn).parameters.keys())
+
+        @functools.wraps(fn)
+        def _wrapper(*args: Any, **kwargs: Any) -> str:
+            merged = {_params[i]: v for i, v in enumerate(args)}
+            merged.update(kwargs)
+            name = fn.__name__
+
+            old_content: str | None = None
+            if name == "write_file":
+                try:
+                    fp = pathlib.Path(merged.get("path", ""))
+                    old_content = fp.read_text(encoding="utf-8") if fp.exists() else None
+                except Exception:
+                    pass
+
+            is_dangerous = name in ("write_file", "run_shell")
+
+            if is_dangerous and self._mode == "ask" and name not in self._always_allowed_tools:
+                _print_tool_preview(name, merged, old_content=old_content)
+                path_or_cmd = merged.get("path") or merged.get("command") or ""
+                ans = display_interactive_approval(name, str(path_or_cmd))
+                if ans is None:
+                    return "error: Tool execution cancelled by user."
+                elif ans == "no":
+                    return "error: Tool execution denied by user."
+                elif ans == "always":
+                    self._always_allowed_tools.add(name)
+                elif ans not in ("yes", "always"):
+                    return (
+                        f"error: Tool execution denied. "
+                        f"User provided this instruction instead: {ans}"
+                    )
+
+            if self._verbose:
+                _print_tool_call(name, merged)
+
+            result: str = fn(*args, **kwargs)
+
+            if self._verbose:
+                _print_tool_result(name, str(result), merged, old_content=old_content)
+
+            return result
+
+        return _wrapper
+
     async def _run_turn(self, model: Any, user_input: str, live: Any = None) -> tuple[str, str]:
         """Send one user message, run the tool loop, return ``(response, stats_line)``.
 
@@ -955,7 +1005,7 @@ class Agent:
             """Count generated tokens for the spinner label."""
             tok_count[0] += 1
 
-        tools = [_wrap_tool_verbose(t) for t in self._tools] if self._verbose else self._tools
+        tools = [self._wrap_tool(t) for t in self._tools]
 
         stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
