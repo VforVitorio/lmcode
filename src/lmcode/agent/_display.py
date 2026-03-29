@@ -481,11 +481,13 @@ def _print_log_event(event: dict[str, object]) -> None:
     """
     event_type = str(event.get("type", ""))
     text = str(event.get("text", ""))
-    
+
     # Try to extract tokens/sec if --stats was passed
     tok_sec = event.get("tokensPerSecond")
-    if tok_sec is None and isinstance(event.get("stats"), dict):
-        tok_sec = event["stats"].get("tokensPerSecond")
+    if tok_sec is None:
+        stats_obj = event.get("stats")
+        if isinstance(stats_obj, dict):
+            tok_sec = stats_obj.get("tokensPerSecond")
     stats_str = f" [{tok_sec:.1f} tok/s]" if isinstance(tok_sec, (int, float)) else ""
 
     if event_type == "input":

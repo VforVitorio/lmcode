@@ -56,6 +56,7 @@ from lmcode.ui.colors import (
     ACCENT,
     ACCENT_BRIGHT,
     ERROR,
+    SUCCESS,
     TEXT_MUTED,
     WARNING,
 )
@@ -750,7 +751,8 @@ class Agent:
             return
 
         console.print(
-            f"[{ERROR}]unknown /model sub-command '{sub}'[/] — valid: list · load <id> · import <path> · unload\n"
+            f"[{ERROR}]unknown /model sub-command '{sub}'[/] "
+            "— valid: list · load <id> · import <path> · unload\n"
         )
 
     async def _model_list(self) -> None:
@@ -829,9 +831,12 @@ class Agent:
         ):
             from lmcode.lms_bridge import import_model
             ok = await asyncio.to_thread(import_model, path)
-            
+
         if ok:
-            console.print(f"[{SUCCESS}]imported successfully[/] [{TEXT_MUTED}]— use /model list to see it[/]\n")
+            console.print(
+                f"[{SUCCESS}]imported successfully[/] "
+                f"[{TEXT_MUTED}]— use /model list to see it[/]\n"
+            )
         else:
             console.print(
                 f"[{ERROR}]failed to import[/] "
