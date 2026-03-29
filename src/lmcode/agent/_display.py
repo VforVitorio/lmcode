@@ -76,7 +76,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tools", "List all available tools with their signatures"),
     ("/history [N]", "Show last N conversation turns (default 5)"),
     ("/status", "Show current session state"),
-    ("/log [--stats]", "Stream lms model I/O logs — shows exact prompt sent to the model"),
+    ("/log", "Stream lms model I/O logs — shows exact prompt sent to the model"),
     ("/temp [value|reset]", "Show or set the sampling temperature (0.0 – 2.0)"),
     ("/params [set <key> <val>|reset]", "Show or set inference params (temperature, maxTokens, …)"),
     ("/version", "Show the running lmcode version"),
