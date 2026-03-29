@@ -261,6 +261,5 @@ async def test_do_model_import_missing_path() -> None:
             await agent._do_model("/model import")
             mock_thread.assert_not_called()
             assert any(
-                "usage: /model import" in str(args)
-                for args, kwargs in mock_print.call_args_list
+                "usage: /model import" in str(args) for args, kwargs in mock_print.call_args_list
             )

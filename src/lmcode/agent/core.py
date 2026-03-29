@@ -830,6 +830,7 @@ class Agent:
             console=console,
         ):
             from lmcode.lms_bridge import import_model
+
             ok = await asyncio.to_thread(import_model, path)
 
         if ok:
