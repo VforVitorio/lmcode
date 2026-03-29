@@ -159,13 +159,15 @@ def list_downloaded_models() -> list[DownloadedModel]:
     return [DownloadedModel.from_dict(item) for item in raw if isinstance(item, dict)]
 
 
-def stream_model_log() -> subprocess.Popen[str] | None:
+def stream_model_log(stats: bool = False) -> subprocess.Popen[str] | None:
     """Start streaming model I/O logs from LM Studio.
 
     Calls ``lms log stream --source model --filter input,output --json`` and
     returns the ``Popen`` object.  The caller is responsible for reading
     ``proc.stdout`` line-by-line (each line is a JSON object) and calling
     ``proc.terminate()`` when done.
+
+    If *stats* is True, appends the ``--stats`` flag to include token metrics.
 
     Returns ``None`` when ``lms`` is not available or the process cannot be
     started.
@@ -182,8 +184,11 @@ def stream_model_log() -> subprocess.Popen[str] | None:
     if not is_available():
         return None
     try:
+        cmd = ["lms", "log", "stream", "--source", "model", "--filter", "input,output", "--json"]
+        if stats:
+            cmd.append("--stats")
         return subprocess.Popen(
-            ["lms", "log", "stream", "--source", "model", "--filter", "input,output", "--json"],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -224,6 +229,29 @@ def load_model(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def import_model(path: str) -> bool:
+    """Import an external model file (.gguf) into LM Studio via ``lms import``.
+
+    Args:
+        path: The filesystem path to the model file.
+
+    Returns:
+        ``True`` on success, ``False`` on any failure or when ``lms`` is absent.
+    """
+    if not is_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["lms", "import", path],
+            capture_output=True,
+            text=True,
             timeout=120,
         )
         return result.returncode == 0
