@@ -34,6 +34,7 @@ from rich.align import Align
 from rich.console import Console
 from rich.console import Group as RenderGroup
 from rich.markup import escape as _escape
+from rich.padding import Padding
 from rich.panel import Panel as _Panel
 from rich.rule import Rule
 from rich.style import Style
@@ -282,7 +283,7 @@ def _render_diff_sidebyside(
     the same palette used by Claude Code's diff view.  Equal lines receive a
     subtle violet-tinted neutral background to keep the panel cohesive.
     """
-    _EQ_BG = "#1c1a2e"  # unchanged — violet-tinted neutral
+    _EQ_BG = None  # transparent for unchanged lines
     _DEL_BG = "#4a221d"  # Codex dark-TC del bg — warm maroon
     _ADD_BG = "#1e3a2a"  # Codex dark-TC add bg — deep forest green
     _SEP = Text("│", style=f"dim {ACCENT}")
@@ -304,25 +305,43 @@ def _render_diff_sidebyside(
     old_hlt_lines = old_text_obj.split("\n")
     new_hlt_lines = new_text_obj.split("\n")
 
-    def _style_line(line_text: Text, bg_color: str, is_empty: bool = False) -> Text:
-        line_text = line_text.copy()
+    def _style_line(line_text: Text, bg_color: str | None, is_empty: bool = False) -> Any:
         if is_empty:
-            return Text("", style=Style(bgcolor=bg_color))
+            return (
+                Text("")
+                if not bg_color
+                else Padding(Text(""), (0, 0), expand=True, style=f"on {bg_color}")
+            )
 
-        line_text.style = Style(bgcolor=bg_color)
         new_spans = []
         for span in line_text.spans:
             if isinstance(span.style, str):
-                new_spans.append(Span(span.start, span.end, f"on {bg_color}"))
+                new_spans.append(Span(span.start, span.end, span.style))
             else:
-                new_spans.append(Span(span.start, span.end, span.style + Style(bgcolor=bg_color)))
+                new_spans.append(
+                    Span(
+                        span.start,
+                        span.end,
+                        Style(
+                            color=span.style.color, bold=span.style.bold, italic=span.style.italic
+                        ),
+                    )
+                )
+
+        line_text = line_text.copy()
         line_text.spans = new_spans
-        return line_text
+        line_text.style = (
+            Style(color=line_text.style.color) if isinstance(line_text.style, Style) else Style()
+        )
+
+        if not bg_color:
+            return line_text
+        return Padding(line_text, (0, 0), expand=True, style=f"on {bg_color}")
 
     added = removed = rows = 0
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
 
-    def _row(left: Text, right: Text) -> None:
+    def _row(left: Any, right: Any) -> None:
         table.add_row(left, _SEP, right)
 
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -335,12 +354,12 @@ def _render_diff_sidebyside(
                 left = (
                     _style_line(old_hlt_lines[i1 + i], _EQ_BG)
                     if i1 + i < old_len
-                    else Text("", style=Style(bgcolor=_EQ_BG))
+                    else _style_line(Text(""), _EQ_BG, is_empty=True)
                 )
                 right = (
                     _style_line(new_hlt_lines[j1 + i], _EQ_BG)
                     if j1 + i < new_len
-                    else Text("", style=Style(bgcolor=_EQ_BG))
+                    else _style_line(Text(""), _EQ_BG, is_empty=True)
                 )
                 _row(left, right)
                 rows += 1
