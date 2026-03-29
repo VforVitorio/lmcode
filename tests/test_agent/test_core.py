@@ -212,3 +212,52 @@ async def test_ctrl_c_rollback_removes_orphaned_message() -> None:
 
     assert len(agent._raw_history) == 2
     assert agent._raw_history[-1] == ("assistant", "reply")
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_do_log_calls_stream_with_stats() -> None:
+    agent = Agent()
+    with patch("lmcode.agent.core.stream_model_log") as mock_stream:
+        # Mock the proc being None so it doesn't try to read stdout
+        mock_stream.return_value = None
+        await agent._do_log("/log --stats")
+        mock_stream.assert_called_once_with(stats=True)
+
+
+@pytest.mark.asyncio
+async def test_do_log_calls_stream_without_stats() -> None:
+    agent = Agent()
+    with patch("lmcode.agent.core.stream_model_log") as mock_stream:
+        mock_stream.return_value = None
+        await agent._do_log("/log")
+        mock_stream.assert_called_once_with(stats=False)
+
+
+@pytest.mark.asyncio
+async def test_do_model_import_calls_import_model() -> None:
+    agent = Agent()
+    with patch("lmcode.agent.core.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+        mock_thread.return_value = True
+        await agent._do_model("/model import test/path.gguf")
+        
+        # We need to verify that import_model was passed to to_thread
+        from lmcode.lms_bridge import import_model
+        
+        # Check that it called to_thread with import_model and the path
+        # Note: the first arg to to_thread is the function
+        mock_thread.assert_called_once_with(import_model, "test/path.gguf")
+
+
+@pytest.mark.asyncio
+async def test_do_model_import_missing_path() -> None:
+    agent = Agent()
+    with patch("lmcode.agent.core.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+        with patch("lmcode.agent.core.console.print") as mock_print:
+            await agent._do_model("/model import")
+            mock_thread.assert_not_called()
+            assert any("usage: /model import" in str(args) for args, kwargs in mock_print.call_args_list)

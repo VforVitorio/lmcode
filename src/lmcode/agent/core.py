@@ -654,7 +654,7 @@ class Agent:
     # /log
     # ------------------------------------------------------------------
 
-    async def _do_log(self) -> None:
+    async def _do_log(self, raw: str) -> None:
         """Stream lms model I/O logs until the user presses Ctrl+C.
 
         Starts ``lms log stream`` via :func:`lms_bridge.stream_model_log` and
@@ -665,7 +665,10 @@ class Agent:
         ``asyncio.CancelledError``) and always calls ``proc.terminate()``
         in the ``finally`` block.
         """
-        proc = stream_model_log()
+        parts = raw.strip().split()
+        stats_flag = len(parts) > 1 and parts[1] in ("stats", "--stats")
+
+        proc = stream_model_log(stats=stats_flag)
         if proc is None:
             console.print(
                 f"[{TEXT_MUTED}]lms not available — install LM Studio CLI to use /log[/]\n"
@@ -704,10 +707,11 @@ class Agent:
         """Handle the ``/model`` family of sub-commands.
 
         Sub-commands:
-            ``/model``             — show current model (read-only).
-            ``/model list``        — table of downloaded + loaded models.
-            ``/model load <id>``   — load *id* via lms, reconnect SDK handle.
-            ``/model unload``      — unload the current model from memory.
+            ``/model``               — show current model (read-only).
+            ``/model list``          — table of downloaded + loaded models.
+            ``/model load <id>``     — load *id* via lms, reconnect SDK handle.
+            ``/model import <path>`` — import an external .gguf model file.
+            ``/model unload``        — unload the current model from memory.
         """
         parts = raw.strip().split()
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -717,6 +721,7 @@ class Agent:
             console.print(
                 f"[{TEXT_MUTED}]  /model list          — list downloaded models[/]\n"
                 f"[{TEXT_MUTED}]  /model load <id>     — switch to a different model[/]\n"
+                f"[{TEXT_MUTED}]  /model import <path> — import a .gguf file into LM Studio[/]\n"
                 f"[{TEXT_MUTED}]  /model unload        — unload current model from memory[/]\n"
             )
             return
@@ -732,12 +737,20 @@ class Agent:
             await self._model_load(parts[2])
             return
 
+        if sub == "import":
+            if len(parts) < 3:
+                console.print(f"[{ERROR}]usage: /model import <path_to_gguf>[/]\n")
+                return
+            # To handle unquoted paths with spaces, just join the rest
+            await self._model_import(" ".join(parts[2:]))
+            return
+
         if sub == "unload":
             await self._model_unload()
             return
 
         console.print(
-            f"[{ERROR}]unknown /model sub-command '{sub}'[/] — valid: list · load <id> · unload\n"
+            f"[{ERROR}]unknown /model sub-command '{sub}'[/] — valid: list · load <id> · import <path> · unload\n"
         )
 
     async def _model_list(self) -> None:
@@ -805,6 +818,25 @@ class Agent:
             f"[{ACCENT_BRIGHT}]switched to {resolved_id}[/] "
             f"[{TEXT_MUTED}]— conversation history cleared[/]\n"
         )
+
+    async def _model_import(self, path: str) -> None:
+        """Import an external .gguf model file via lms."""
+        console.print(f"[{TEXT_MUTED}]importing {path} …[/]")
+        with Live(
+            Spinner(_SPINNER, text=f" importing {path}… (this may take a moment)", style=ACCENT),
+            transient=True,
+            console=console,
+        ):
+            from lmcode.lms_bridge import import_model
+            ok = await asyncio.to_thread(import_model, path)
+            
+        if ok:
+            console.print(f"[{SUCCESS}]imported successfully[/] [{TEXT_MUTED}]— use /model list to see it[/]\n")
+        else:
+            console.print(
+                f"[{ERROR}]failed to import[/] "
+                f"[{TEXT_MUTED}]— verify the file exists and is a valid .gguf[/]\n"
+            )
 
     async def _model_unload(self) -> None:
         """Unload the current model from LM Studio memory."""
@@ -1041,8 +1073,8 @@ class Agent:
                     if stripped.startswith("/"):
                         if stripped == "/compact":
                             await self._do_compact()
-                        elif stripped == "/log":
-                            await self._do_log()
+                        elif stripped.startswith("/log"):
+                            await self._do_log(stripped)
                         elif stripped.startswith("/model"):
                             await self._do_model(stripped)
                         else:

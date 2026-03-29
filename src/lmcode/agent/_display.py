@@ -67,7 +67,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear", "Clear conversation history"),
     ("/compact", "Summarise history to free context space"),
     ("/mode [ask|auto|strict]", "Show or change the permission mode"),
-    ("/model", "Show current model · /model list · /model load <id> · /model unload"),
+    ("/model", "Manage model · /model list|load <id>|import <path>|unload"),
     ("/verbose", "Toggle verbose mode (show tool calls and results)"),
     ("/tips", "Toggle rotating tips shown during thinking"),
     ("/stats", "Toggle token stats shown after each response"),
@@ -76,7 +76,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/tools", "List all available tools with their signatures"),
     ("/history [N]", "Show last N conversation turns (default 5)"),
     ("/status", "Show current session state"),
-    ("/log", "Stream lms model I/O logs — shows exact prompt sent to the model"),
+    ("/log [--stats]", "Stream lms model I/O logs — shows exact prompt sent to the model"),
     ("/temp [value|reset]", "Show or set the sampling temperature (0.0 – 2.0)"),
     ("/params [set <key> <val>|reset]", "Show or set inference params (temperature, maxTokens, …)"),
     ("/version", "Show the running lmcode version"),
@@ -481,6 +481,13 @@ def _print_log_event(event: dict[str, object]) -> None:
     """
     event_type = str(event.get("type", ""))
     text = str(event.get("text", ""))
+    
+    # Try to extract tokens/sec if --stats was passed
+    tok_sec = event.get("tokensPerSecond")
+    if tok_sec is None and isinstance(event.get("stats"), dict):
+        tok_sec = event["stats"].get("tokensPerSecond")
+    stats_str = f" [{tok_sec:.1f} tok/s]" if isinstance(tok_sec, (int, float)) else ""
+
     if event_type == "input":
         label = Text()
         label.append("  ↑ input   ", style=f"dim {ACCENT}")
@@ -488,7 +495,7 @@ def _print_log_event(event: dict[str, object]) -> None:
         console.print(label)
     elif event_type == "output":
         label = Text()
-        label.append("  ↓ output  ", style=f"dim {ACCENT_BRIGHT}")
+        label.append(f"  ↓ output{stats_str}  ", style=f"dim {ACCENT_BRIGHT}")
         label.append(text[:300])
         console.print(label)
     else:

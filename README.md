@@ -62,41 +62,41 @@ LM Studio   →   lmcode agent   →   your codebase
 
 ## Slash commands
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show all available slash commands |
-| `/status` | Show session stats, model info, and context window usage |
-| `/tokens` | Show session prompt (↑) and generated (↓) token totals with context arc |
-| `/compact` | Summarise history, reset chat, inject summary as context |
-| `/history [N]` | Show last N conversation turns as panels (default 5) |
-| `/hide-model` | Toggle model name visibility in the live prompt |
-| `/verbose` | Toggle verbose tool-call output |
-| `/tips` | Toggle cycling tips below the thinking spinner |
-| `/stats` | Toggle per-turn stats line after each response |
-| `/tools` | List all registered tools |
+| Command        | Description                                                             |
+| -------------- | ----------------------------------------------------------------------- |
+| `/help`        | Show all available slash commands                                       |
+| `/status`      | Show session stats, model info, and context window usage                |
+| `/tokens`      | Show session prompt (↑) and generated (↓) token totals with context arc |
+| `/compact`     | Summarise history, reset chat, inject summary as context                |
+| `/history [N]` | Show last N conversation turns as panels (default 5)                    |
+| `/hide-model`  | Toggle model name visibility in the live prompt                         |
+| `/verbose`     | Toggle verbose tool-call output                                         |
+| `/tips`        | Toggle cycling tips below the thinking spinner                          |
+| `/stats`       | Toggle per-turn stats line after each response                          |
+| `/tools`       | List all registered tools                                               |
 
 ---
 
 ## Status
 
-| Component | Status |
-|---|---|
-| CLI skeleton (Typer + Rich) | ✅ done |
-| LM Studio adapter (`model.act`) | ✅ done |
-| Agent loop + basic tools | ✅ done |
-| Slash commands + UX polish | ✅ done |
-| Animated spinner + state labels | ✅ done |
-| Tool output panels (file, diff, shell) | ✅ done |
-| Ghost-text autocomplete + history | ✅ done |
-| Ctrl+C interrupt mid-generation | ✅ done |
-| Graceful LM Studio disconnect handling | ✅ done |
-| Streaming Markdown output | 🔶 in progress |
-| Interactive permission UI (ask mode) | 🔲 planned |
-| Session recorder (JSONL) | 🔲 planned |
-| Session viewer (Textual TUI) | 🔲 planned |
-| MCP client | 🔲 planned |
-| Plan mode / Agent mode | 🔲 planned |
-| VSCode extension | 🔲 planned |
+| Component                              | Status         |
+| -------------------------------------- | -------------- |
+| CLI skeleton (Typer + Rich)            | ✅ done        |
+| LM Studio adapter (`model.act`)        | ✅ done        |
+| Agent loop + basic tools               | ✅ done        |
+| Slash commands + UX polish             | ✅ done        |
+| Animated spinner + state labels        | ✅ done        |
+| Tool output panels (file, diff, shell) | ✅ done        |
+| Ghost-text autocomplete + history      | ✅ done        |
+| Ctrl+C interrupt mid-generation        | ✅ done        |
+| Graceful LM Studio disconnect handling | ✅ done        |
+| Streaming Markdown output              | 🔶 in progress |
+| Interactive permission UI (ask mode)   | 🔲 planned     |
+| Session recorder (JSONL)               | 🔲 planned     |
+| Session viewer (Textual TUI)           | 🔲 planned     |
+| MCP client                             | 🔲 planned     |
+| Plan mode / Agent mode                 | 🔲 planned     |
+| VSCode extension                       | 🔲 planned     |
 
 ---
 
@@ -128,6 +128,7 @@ pip install lmcode
 ```
 
 > Not published to PyPI yet. Install from source in the meantime:
+>
 > ```bash
 > git clone https://github.com/VforVitorio/lmcode
 > cd lmcode
@@ -208,16 +209,19 @@ uv run pytest
 ## Roadmap
 
 **v0.1.0 — Basic chat** ✅
+
 - [x] `lmcode chat` with LM Studio connection
 - [x] Agent loop (`model.act`) + basic tools
 - [x] Auto-connect to LM Studio
 
 **v0.2.0 — Full tool suite** ✅
+
 - [x] `write_file`, `list_files`, `run_shell`, `search_code` tools
 - [x] Banner + status bar
 - [x] Slash commands (`/help`, `/status`, `/verbose`, `/tools`, `/compact`)
 
 **v0.3.0 — UX polish** ✅
+
 - [x] `/compact` — summarise history and reset chat
 - [x] `/tokens` — session token totals and context arc
 - [x] `/hide-model` — toggle model name in prompt
@@ -225,6 +229,7 @@ uv run pytest
 - [x] Context window indicator — arc `○◔◑◕●` + % in `/status` and `/tokens`
 
 **v0.4.0 — Input & display** ✅
+
 - [x] Animated spinner with state labels (`thinking…` / `working…` / `finishing…`)
 - [x] Ghost-text slash autocomplete (fish-shell style, Tab to accept)
 - [x] Persistent history — Ctrl+R / Up-arrow across sessions
@@ -234,31 +239,36 @@ uv run pytest
 - [x] `/history [N]` — show last N conversation turns
 
 **v0.5.0 — Agent modes** ✅ done
+
 - [x] Ctrl+C interrupt mid-generation — returns to prompt, shows `^C` / `interrupted` (#60)
 - [x] Verbose tool panels always shown — fixed positional-arg merge in `_wrap_tool_verbose`
 - [x] `write_file` escape sequences — literal `\n`/`\t` unescaped before writing
 - [x] SDK channel noise suppression after Ctrl+C
-- [ ] Streaming Markdown output (#56)
+- [x] Streaming Markdown output (#56)
 - [ ] Interactive permission UI — diff view + arrow-key confirm in ask mode (#40)
 - [ ] Plan mode — model proposes a plan before executing (#21)
 - [ ] Agent mode — autonomous multi-step execution (#22)
 
 **v0.6.0 — Stability** ✅ done
+
 - [x] Graceful LM Studio disconnect handling (#70)
 - [x] SDK WebSocket JSON noise suppression
 
 **v0.6.1 — Refactor & polish** ✅ done
+
 - [x] `agent/core.py` split into focused submodules (`_noise`, `_display`, `_prompt`)
 - [x] `write_file` mixed newline unescape fix (Qwen 7B compatibility)
 - [x] Full test coverage for display and noise modules
 
 **v0.7.0 — In progress**
-- [ ] Streaming Markdown output (#56)
+
+- [x] Streaming Markdown output (#56)
 - [ ] Interactive permission UI — diff view + arrow-key confirm in ask mode (#40)
 - [ ] `/model` mid-session switch (#19)
 - [ ] Enriched startup banner via `lms ps --json`
 
 **v1.0**
+
 - [ ] Session recorder + Textual TUI viewer
 - [ ] MCP client
 - [ ] Stable API + docs site

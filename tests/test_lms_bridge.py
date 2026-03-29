@@ -18,6 +18,7 @@ from lmcode.lms_bridge import (
     list_downloaded_models,
     list_loaded_models,
     load_model,
+    import_model,
     server_start,
     server_stop,
     stream_model_log,
@@ -273,6 +274,20 @@ def test_stream_model_log_returns_popen_when_available() -> None:
     assert "lms" in cmd
     assert "log" in cmd
     assert "--json" in cmd
+    assert "--stats" not in cmd
+
+
+def test_stream_model_log_with_stats() -> None:
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            result = stream_model_log(stats=True)
+    assert result is mock_proc
+    cmd = mock_popen.call_args[0][0]
+    assert "lms" in cmd
+    assert "log" in cmd
+    assert "--json" in cmd
+    assert "--stats" in cmd
 
 
 def test_stream_model_log_returns_none_when_lms_absent() -> None:
@@ -401,6 +416,36 @@ def test_unload_model_returns_false_when_lms_absent() -> None:
 def test_unload_model_returns_false_with_no_args() -> None:
     with patch("shutil.which", return_value="/usr/bin/lms"):
         assert unload_model() is False
+
+
+# ---------------------------------------------------------------------------
+# import_model
+# ---------------------------------------------------------------------------
+
+
+def test_import_model_returns_true_on_success() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_ok_run()) as mock_run:
+            assert import_model("test/path.gguf") is True
+    cmd = mock_run.call_args[0][0]
+    assert cmd == ["lms", "import", "test/path.gguf"]
+
+
+def test_import_model_returns_false_on_nonzero_exit() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", return_value=_fail_run()):
+            assert import_model("bad/path.gguf") is False
+
+
+def test_import_model_returns_false_when_lms_absent() -> None:
+    with patch("shutil.which", return_value=None):
+        assert import_model("any") is False
+
+
+def test_import_model_returns_false_on_timeout() -> None:
+    with patch("shutil.which", return_value="/usr/bin/lms"):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="lms", timeout=120)):
+            assert import_model("test") is False
 
 
 # ---------------------------------------------------------------------------
