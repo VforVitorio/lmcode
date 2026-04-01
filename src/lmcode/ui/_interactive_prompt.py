@@ -124,7 +124,8 @@ def display_interactive_approval(tool_name: str, path_or_cmd: str) -> str | None
     if result_code == "no":
         fg_accent_bright = _ansi_fg(ACCENT_BRIGHT)
         sys.stdout.write(
-            f"\r\033[K  {fg_accent_bright}❯{_RESET} {fg_muted}Tell lmcode what to do instead: {_RESET}"
+            f"\r\033[K  {fg_accent_bright}❯{_RESET} "
+            f"{fg_muted}Tell lmcode what to do instead: {_RESET}"
         )
         sys.stdout.flush()
         try:
