@@ -921,7 +921,17 @@ class Agent:
             if is_dangerous and self._mode == "ask" and name not in self._always_allowed_tools:
                 _print_tool_preview(name, merged, old_content=old_content)
                 path_or_cmd = merged.get("path") or merged.get("command") or ""
-                ans = display_interactive_approval(name, str(path_or_cmd))
+
+                live_obj = getattr(self, "_current_live", None)
+                if live_obj:
+                    live_obj.stop()
+
+                try:
+                    ans = display_interactive_approval(name, str(path_or_cmd))
+                finally:
+                    if live_obj:
+                        live_obj.start()
+
                 if ans is None:
                     return "error: Tool execution cancelled by user."
                 elif ans == "no":
@@ -959,6 +969,7 @@ class Agent:
         When :attr:`_verbose` is ``True``, each tool is wrapped with
         :func:`_wrap_tool_verbose` to print its call and result inline.
         """
+        self._current_live = live
         chat = self._ensure_chat()
         chat.add_user_message(user_input)
 
