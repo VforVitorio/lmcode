@@ -52,6 +52,7 @@ src/lmcode/
 │   └── lmcode_md.py     # find_lmcode_md() + read_lmcode_md() — walks up tree
 │
 ├── ui/
+│   ├── _interactive_prompt.py # Tool approval menu (ANSI + Windows Terminal fixes)
 │   ├── colors.py        # All color constants (ACCENT, SUCCESS, ERROR, etc.)
 │   ├── banner.py        # ASCII art startup banner (full + compact)
 │   ├── status.py        # build_prompt(), build_status_line(), next_mode()
@@ -83,15 +84,16 @@ src/lmcode/
 
 ### Key Files and Their Roles
 
-| File | Role |
-|------|------|
-| `agent/core.py` | The heart of lmcode. Contains: `Agent` class, `_BASE_SYSTEM_PROMPT`, `_SLASH_COMMANDS` list, spinner logic, diff rendering, tool output panels, `run_chat()` entry point. ~1200 lines. |
-| `tools/registry.py` | 24-line module. `@register` decorator stores tools in `_registry` dict. `get_all()` returns list for `model.act(tools=...)`. |
-| `tools/filesystem.py` | `read_file`, `write_file`, `list_files`. Must be imported in `core.py` (even if unused) to trigger the `@register` decorators. |
-| `config/settings.py` | Pydantic-settings singleton. `get_settings()` returns cached `Settings`. Reads `~/.config/lmcode/config.toml` and `LMCODE_*` env vars. |
-| `config/lmcode_md.py` | Walks directory tree upward looking for `LMCODE.md` files. Combines them root-to-leaf and injects into system prompt. |
-| `ui/colors.py` | Single source of truth for all colors. Import constants from here; never hardcode hex strings elsewhere. |
-| `ui/status.py` | `build_prompt()` returns prompt-toolkit HTML for the live input prompt. `build_status_line()` for the post-connect status. |
+| File                        | Role                                                                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent/core.py`             | The heart of lmcode. Contains: `Agent` class, `_BASE_SYSTEM_PROMPT`, `_SLASH_COMMANDS` list, spinner logic, diff rendering, tool output panels, `run_chat()` entry point. ~1200 lines.     |
+| `tools/registry.py`         | 24-line module. `@register` decorator stores tools in `_registry` dict. `get_all()` returns list for `model.act(tools=...)`.                                                               |
+| `tools/filesystem.py`       | `read_file`, `write_file`, `list_files`. Must be imported in `core.py` (even if unused) to trigger the `@register` decorators.                                                             |
+| `config/settings.py`        | Pydantic-settings singleton. `get_settings()` returns cached `Settings`. Reads `~/.config/lmcode/config.toml` and `LMCODE_*` env vars.                                                     |
+| `config/lmcode_md.py`       | Walks directory tree upward looking for `LMCODE.md` files. Combines them root-to-leaf and injects into system prompt.                                                                      |
+| `ui/colors.py`              | Single source of truth for all colors. Import constants from here; never hardcode hex strings elsewhere.                                                                                   |
+| `ui/_interactive_prompt.py` | Arrow-key tool approval prompt. Uses raw ANSI and `\r\033[K` for perfect terminal line clearing without breaking on Windows under concurrent output (bypasses prompt_toolkit Layout bugs). |
+| `ui/status.py`              | `build_prompt()` returns prompt-toolkit HTML for the live input prompt. `build_status_line()` for the post-connect status.                                                                 |
 
 ### Data Flow
 
@@ -216,6 +218,7 @@ gh pr create --base dev --title "feat: ..." --body "..."
 ```
 
 ### Commit message style (Conventional Commits):
+
 ```
 feat: add search_code tool using ripgrep
 fix: handle empty file in read_file tool
@@ -229,6 +232,7 @@ test: add integration tests for shell tool
 ## 5. Code Standards
 
 ### Core principles
+
 - **Single responsibility** — each file, class, and function does one thing
 - **Small helpers** — extract named helper functions instead of inline logic blocks
 - **Docstrings on every file and public function** — the module docstring goes at the top of every `.py` file; every public function gets a one-line or multi-line docstring
@@ -236,6 +240,7 @@ test: add integration tests for shell tool
 - **No unnecessary abstractions** — don't create a class where a function will do; don't create a module where a function in an existing module will do
 
 ### Patterns
+
 - Tools return `str` (never raise exceptions — return `"error: ..."` strings)
 - Tools are plain functions; the LM Studio SDK converts type hints + docstring → JSON schema
 - `@register` from `tools/registry.py` is the only registration mechanism
@@ -244,6 +249,7 @@ test: add integration tests for shell tool
 - `from __future__ import annotations` is the first non-comment line in every source file
 
 ### Style (enforced by ruff + mypy)
+
 - Line length: 100 characters
 - Python target: 3.12
 - Ruff rules: E, W, F, I, B, C4, UP
@@ -284,12 +290,15 @@ Implement a new lmcode feature end-to-end.
 5. **Write tests.** Every new tool needs tests in `tests/test_tools/test_<toolname>.py`. Agent behavior changes go in `tests/test_agent/test_core.py`. Use `tmp_path` for filesystem tests. Mock LM Studio for unit tests (see `tests/conftest.py`).
 
 6. **Run CI checks and report results:**
+
    ```bash
    uv run ruff check . && uv run ruff format --check . && uv run mypy src/ && uv run pytest
    ```
+
    Fix any failures before proceeding.
 
 7. **Provide the git commands as text** (do not run them):
+
    ```bash
    git checkout dev && git pull origin dev
    git checkout -b feat/<feature-name>
@@ -321,6 +330,7 @@ Fix a bug in lmcode.
 4. **Add a regression test** that would have caught this bug. Place it in the appropriate test file.
 
 5. **Run CI checks:**
+
    ```bash
    uv run ruff check . && uv run ruff format --check . && uv run mypy src/ && uv run pytest
    ```
@@ -344,6 +354,7 @@ Close a GitHub issue with proper resolution documentation.
 **Steps:**
 
 1. **Read the issue:**
+
    ```bash
    gh issue view <number>
    ```
@@ -353,6 +364,7 @@ Close a GitHub issue with proper resolution documentation.
 3. **If it requires code changes:** Use `/feature` or `/fix` skill to implement the fix, referencing the issue number in the commit message (`fixes #<number>`).
 
 4. **If it's already resolved or won't be fixed:** Comment explaining the decision:
+
    ```bash
    gh issue comment <number> --body "..."
    gh issue close <number>
@@ -384,6 +396,7 @@ Complete release workflow for a new lmcode version.
 3. **Update CHANGELOG.md.** Move items from `[Unreleased]` to a new `[X.Y.Z] - YYYY-MM-DD` section.
 
 4. **Provide git commands for the release commit:**
+
    ```bash
    git checkout dev && git pull origin dev
    git add src/lmcode/__init__.py pyproject.toml CHANGELOG.md tests/test_smoke.py
@@ -392,11 +405,13 @@ Complete release workflow for a new lmcode version.
    ```
 
 5. **Create the PR dev → main** (provide as text):
+
    ```bash
    gh pr create --base main --head dev --title "release: vX.Y.Z" --body "$(cat CHANGELOG.md | ...)"
    ```
 
 6. **After the PR is merged**, provide the tag and GitHub release commands:
+
    ```bash
    git checkout main && git pull origin main
    git tag -a vX.Y.Z -m "vX.Y.Z"
@@ -419,31 +434,37 @@ Start `uv run lmcode chat` in the lmcode repo directory, then run these prompts 
 **Test sequence:**
 
 1. **read_file panel** (should show syntax-highlighted panel with line numbers):
+
    ```
    read the file playground/calculator.py
    ```
 
 2. **write_file diff block — modification** (should show side-by-side diff with +/- counts):
+
    ```
    add a multiply(a, b) function to playground/calculator.py
    ```
 
 3. **write_file new file** (should show new-file panel, not a diff):
+
    ```
    create playground/greet.py with a greet(name) function
    ```
 
 4. **run_shell IN/OUT panel** (should show the IN/OUT panel with separator):
+
    ```
    run python playground/calculator.py
    ```
 
 5. **search_code** (should show inline results):
+
    ```
    search for "def " in playground/
    ```
 
 6. **multi-step flow** (tests multiple tool calls):
+
    ```
    read playground/data.json, add a "version": "1.0" field, and save it
    ```
@@ -459,6 +480,7 @@ Start `uv run lmcode chat` in the lmcode repo directory, then run these prompts 
 8. **Tab mode cycling** — press Tab to cycle ask → auto → strict → ask
 
 **What to look for:**
+
 - Spinner animates with state labels (thinking. / working. / finishing.)
 - Diff blocks show Catppuccin colors (rose on maroon / green on dark green)
 - File panels have violet border, one-dark theme, line numbers
@@ -476,24 +498,29 @@ Run all CI checks and report the status.
 ```bash
 uv run ruff check .
 ```
+
 Report: how many errors, which files, what rules.
 
 ```bash
 uv run ruff format --check .
 ```
+
 Report: which files would be reformatted.
 
 ```bash
 uv run mypy src/
 ```
+
 Report: how many errors, which files.
 
 ```bash
 uv run pytest -v
 ```
+
 Report: how many passed/failed/skipped.
 
 **Summary format:**
+
 ```
 ruff check:   PASS / FAIL (N errors in X files)
 ruff format:  PASS / FAIL (N files need formatting)
@@ -514,6 +541,7 @@ List all open GitHub issues with priorities and status.
 **Steps:**
 
 1. Fetch all open issues:
+
    ```bash
    gh issue list --limit 100 --state open
    ```
@@ -525,6 +553,7 @@ List all open GitHub issues with priorities and status.
    - Whether they block other work
 
 3. Format the output as a prioritized table:
+
    ```
    HIGH PRIORITY (blocking current milestone)
    #XX  [bug]     title
@@ -561,6 +590,7 @@ Explain a file, module, or concept in the lmcode codebase.
 4. **Show code snippets** only for the most important parts — the function signature, the key pattern, the non-obvious line. Don't paste entire files.
 
 **Common explanation topics:**
+
 - "the agent loop" → `agent/core.py`, `Agent._run_turn()`, `model.act()`
 - "tool registration" → `tools/registry.py`, `@register`, import in `core.py`
 - "LMCODE.md" → `config/lmcode_md.py`, `_build_system_prompt()`
@@ -575,6 +605,7 @@ Explain a file, module, or concept in the lmcode codebase.
 ## 7. Key Constants and Patterns
 
 ### Colors (`src/lmcode/ui/colors.py`)
+
 ```python
 ACCENT = "#a78bfa"        # violet — main brand color, headings, highlights
 ACCENT_BRIGHT = "#c4b5fd" # lighter violet — arrows, secondary accents
@@ -590,6 +621,7 @@ INFO = "#3b82f6"          # blue
 ```
 
 ### Tool Registration Pattern
+
 ```python
 # In any tools/*.py file:
 from lmcode.tools.registry import register
@@ -604,6 +636,7 @@ from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorato
 ```
 
 ### Slash Commands
+
 ```python
 # In agent/core.py — two places to update when adding a slash command:
 
@@ -620,23 +653,28 @@ if cmd == "/mycommand":
 ```
 
 ### System Prompt
+
 `_BASE_SYSTEM_PROMPT` in `agent/core.py` — injected with `{cwd}` and `{platform}`. `_build_system_prompt()` appends any `LMCODE.md` content found walking up the directory tree.
 
 ### Settings Access
+
 ```python
 from lmcode.config.settings import get_settings
 settings = get_settings()  # lazy singleton; reads config.toml + LMCODE_ env vars
 ```
 
 ### PR Branch Flow
+
 ```
 feat/* or fix/*  →  dev  →  main
 ```
 
 ### Context Window Arc Characters
+
 `_CTX_ARCS = ["○", "◔", "◑", "◕", "●"]` — shown in `/tokens` and `/status`. Warns at 80% usage (`_CTX_WARN_THRESHOLD = 0.80`).
 
 ### Spinner States
+
 - `"thinking"` — model is processing, no tool call yet
 - `"working"` — tool call in progress (no path known)
 - `"tool /path/fragment"` — tool call with a file path (last 30 chars of path)
@@ -647,30 +685,43 @@ feat/* or fix/*  →  dev  →  main
 ## 8. Known Issues / Gotchas
 
 ### LM Studio SDK event loop binding
+
 The SDK's `AsyncTaskManager` is bound to the main event loop. Everything async — including `model.act()`, `model.respond()`, and `model.get_context_length()` — must run on the main loop. Do not offload to thread executors. The keepalive spinner task runs on the same loop and works because `model.act()` yields control during HTTP I/O.
 
 ### Spinner freeze during synchronous tool calls
+
 The keepalive task updates the spinner every 100ms, but it only runs when `model.act()` yields to the event loop (during async HTTP prefill). During synchronous tool execution (file reads, shell commands), the event loop is blocked and the spinner freezes. This is a known limitation; see open issue tracking. Adding `await asyncio.sleep(0)` before tool execution did not help in practice.
 
 ### The `filesystem` import in `core.py`
+
 ```python
 from lmcode.tools import filesystem  # noqa: F401 — ensures @register decorators run
 ```
+
 This import looks unused (and ruff would flag it without the `noqa`). It is essential: importing the module runs the `@register` decorators that populate the tool registry. Without it, no tools are available. Every new tool module must be imported here.
 
+### Spinner frozen vs Spinner breaking UI
+
+The spinner uses `rich.Live` on a background asyncio task. It is temporarily paused in `core.py` using `_current_live.stop()` whenever `_interactive_prompt` runs. This stops concurrent output from creating duplicate menus when using the native ANSI `sys.stdout.write` clearing methods (`\r\033[...A`).
+
 ### `ruff format` must run before commits
+
 The CI lint job runs `uv run ruff format --check .` (not `ruff format .`). It will fail if files are not formatted. Always run `uv run ruff format .` before staging, or use `uv run pre-commit install` to automate it.
 
 ### `tests/test_smoke.py` hardcodes the version string
+
 `test_version_string()` asserts `lmcode.__version__ == "0.1.0"`. Update this test when bumping the version in `__init__.py` and `pyproject.toml`.
 
 ### `write_file` always does full overwrites
+
 There is no surgical edit tool yet. The agent must call `read_file` first, modify the content in memory, then call `write_file` with the complete new content. The diff block in the UI is generated by comparing the pre-write content (captured before the write) with the new content.
 
 ### Config is a lazy singleton
+
 `get_settings()` caches the `Settings` instance after the first call. If settings are changed at runtime (e.g., via `lmcode config set`), call `reset_settings()` to clear the cache so the next `get_settings()` reloads from disk.
 
 ### Many modules are stubs
+
 `agent/context.py`, `agent/memory.py`, `mcp/bridge.py`, `mcp/client.py`, `mcp/openapi.py`, `session/recorder.py`, `session/storage.py`, `ui/chat_ui.py`, `ui/viewer.py`, and all `ui/components/` files are single-line stubs. Don't be surprised when they're empty.
 
 ---
@@ -678,6 +729,7 @@ There is no surgical edit tool yet. The agent must call `read_file` first, modif
 ## 9. Testing
 
 ### Test structure
+
 ```
 tests/
 ├── conftest.py                     # tmp_repo fixture, mock_lmstudio fixture
@@ -694,6 +746,7 @@ tests/
 ```
 
 ### Testing conventions
+
 - Use `tmp_path` pytest fixture for any test that reads or writes files
 - Mock LM Studio via `tests/conftest.py::mock_lmstudio` for unit tests
 - Tests that require a running LM Studio instance are marked `@pytest.mark.integration` and skipped in CI unless `LMCODE_INTEGRATION=1` is set
@@ -703,6 +756,7 @@ tests/
 - Avoid mocking the database or filesystem — use real `tmp_path` fixtures
 
 ### Running tests
+
 ```bash
 uv run pytest                                    # all tests
 uv run pytest tests/test_tools/                  # one directory
@@ -715,16 +769,16 @@ uv run pytest -k "filesystem"                    # filter by name
 
 ## 10. Project Files Reference
 
-| File | Purpose |
-|------|---------|
-| `pyproject.toml` | Package metadata, dependencies, ruff/mypy/pytest config |
-| `README.md` | Public documentation, feature list, install instructions |
-| `DESIGN.md` | Architecture decisions, agent loop design, plugin/MCP/multi-agent design |
-| `ROADMAP.md` | Planned versions and features |
-| `CONTRIBUTING.md` | Contributor guide: setup, standards, PR checklist |
-| `CHANGELOG.md` | Version history (Keep a Changelog format) |
-| `SKELETON.md` | Full file tree breakdown |
-| `playground/` | Safe sandbox for testing features; edit/break anything here |
-| `.github/workflows/ci.yml` | CI: test (pytest + coverage), lint (ruff), typecheck (mypy) |
-| `LMCODE.md` | (this repo) Project context injected into lmcode's own system prompt |
-| `CLAUDE.md` | (this file) Claude Code instructions and skills |
+| File                       | Purpose                                                                  |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `pyproject.toml`           | Package metadata, dependencies, ruff/mypy/pytest config                  |
+| `README.md`                | Public documentation, feature list, install instructions                 |
+| `DESIGN.md`                | Architecture decisions, agent loop design, plugin/MCP/multi-agent design |
+| `ROADMAP.md`               | Planned versions and features                                            |
+| `CONTRIBUTING.md`          | Contributor guide: setup, standards, PR checklist                        |
+| `CHANGELOG.md`             | Version history (Keep a Changelog format)                                |
+| `SKELETON.md`              | Full file tree breakdown                                                 |
+| `playground/`              | Safe sandbox for testing features; edit/break anything here              |
+| `.github/workflows/ci.yml` | CI: test (pytest + coverage), lint (ruff), typecheck (mypy)              |
+| `LMCODE.md`                | (this repo) Project context injected into lmcode's own system prompt     |
+| `CLAUDE.md`                | (this file) Claude Code instructions and skills                          |

@@ -302,6 +302,10 @@ class Agent:
         self._show_stats: bool = get_settings().ui.show_stats
         self._always_allowed_tools: set[str] = set()
         self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
+        # Set by _wrap_tool when the user rejects a tool call and types a
+        # redirect instruction.  run() detects this after the turn ends and
+        # feeds the instruction back as a brand-new user message.
+        self._pending_user_feedback: str | None = None
 
     # ------------------------------------------------------------------
     # Chat initialisation
@@ -939,9 +943,14 @@ class Agent:
                 elif ans == "always":
                     self._always_allowed_tools.add(name)
                 elif ans not in ("yes", "always"):
+                    # User typed redirect instructions instead of accepting.
+                    # Stash them so run() can inject them as a real user
+                    # message on the next turn, and end this call cleanly.
+                    self._pending_user_feedback = ans
                     return (
-                        f"error: Tool execution denied. "
-                        f"User provided this instruction instead: {ans}"
+                        "error: Tool execution cancelled by user. "
+                        "Do not retry — the user's new instructions will "
+                        "arrive in the next message."
                     )
 
             if self._verbose:
@@ -1115,23 +1124,36 @@ class Agent:
                 console.print(build_status_line(resolved_id) + "\n")
                 _print_startup_tip()
 
+                auto_input: str | None = None
                 while True:
-                    try:
-                        user_input = await session.prompt_async(
-                            lambda: build_prompt(
-                                self._model_display,
-                                self._mode,
-                                compact=self._compact_prompt,
+                    if auto_input is not None:
+                        # A rejected tool call left behind redirect
+                        # instructions — inject them as if the user had
+                        # just typed them at the prompt.
+                        user_input = auto_input
+                        auto_input = None
+                        stripped = user_input.strip()
+                        row = Text()
+                        row.append("  ›  ", style=TEXT_MUTED)
+                        row.append(stripped, style=f"dim {TEXT_MUTED}")
+                        console.print(row)
+                    else:
+                        try:
+                            user_input = await session.prompt_async(
+                                lambda: build_prompt(
+                                    self._model_display,
+                                    self._mode,
+                                    compact=self._compact_prompt,
+                                )
                             )
-                        )
-                    except EOFError:
-                        break
+                        except EOFError:
+                            break
 
-                    stripped = user_input.strip()
-                    if not stripped:
-                        continue
+                        stripped = user_input.strip()
+                        if not stripped:
+                            continue
 
-                    _rewrite_as_history(stripped)
+                        _rewrite_as_history(stripped)
 
                     if stripped.lower() in ("exit", "quit", "q"):
                         console.print(f"[{TEXT_MUTED}]bye[/]")
@@ -1181,6 +1203,8 @@ class Agent:
                                 self._chat.add_user_message(_msg)
                             else:
                                 self._chat.add_assistant_response(_msg)
+                        # Drop any pending redirect — the user cancelled.
+                        self._pending_user_feedback = None
                         console.print(f"\n[{TEXT_MUTED}]^C[/]")
                         console.print(f"[italic {TEXT_MUTED}]interrupted[/]")
                         console.print(Rule(style=f"dim {ACCENT}"))
@@ -1208,6 +1232,13 @@ class Agent:
                                 f"the conversation[/]"
                             )
                     console.print(Rule(style=f"dim {ACCENT}"))
+
+                    # If the user rejected a tool call with redirect
+                    # instructions, feed them back as a brand-new user
+                    # message on the next loop iteration.
+                    if self._pending_user_feedback:
+                        auto_input = self._pending_user_feedback
+                        self._pending_user_feedback = None
 
         except SystemExit:
             pass
