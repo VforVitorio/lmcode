@@ -394,6 +394,10 @@ class Agent:
         self._show_stats: bool = get_settings().ui.show_stats
         self._always_allowed_tools: set[str] = set()
         self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
+        # True once the first-time auto-mode warning has been shown.  The
+        # warning fires the first time the user Tab-cycles into auto mode
+        # during a session — never again, even after cycling away and back.
+        self._auto_warned: bool = False
         # Set by _run_turn when ``max_prediction_rounds`` was hit this turn
         # (either the SDK raised LMStudioPredictionError on the final round,
         # or ActResult.rounds reached the configured cap). run() reads this
@@ -1258,13 +1262,6 @@ class Agent:
         act_result: Any = None
         respond_result: Any = None
         strict_start: float | None = None
-        # Reset the flag at the start of every turn. run() reads it after
-        # _run_turn returns to decide whether to print the limit warning.
-        self._last_turn_limit_reached = False
-        # Pull max_rounds here (not later) so tests can patch
-        # get_settings() once and see a single call. None disables the cap.
-        max_rounds = get_settings().agent.max_rounds
-        max_prediction_rounds: int | None = max_rounds if max_rounds and max_rounds > 0 else None
         try:
             if self._mode == "strict":
                 # Strict mode (#99): use ``model.respond()`` — the pure
@@ -1299,6 +1296,7 @@ class Agent:
                         max_prediction_rounds=max_prediction_rounds,
                         config=self._inference_config if self._inference_config else None,
                         on_message=_on_message,
+                        on_round_start=_on_round_start,
                         on_prediction_completed=_on_prediction_completed,
                         on_prediction_fragment=_on_fragment,
                     )
