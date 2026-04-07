@@ -17,6 +17,7 @@ import inspect
 import json
 import pathlib
 import random
+import time
 from typing import Any
 
 import lmstudio as lms
@@ -1025,15 +1026,12 @@ class Agent:
             """Count generated tokens for the spinner label."""
             tok_count[0] += 1
 
-        # Strict mode enforcement (#99): send an empty tool list so the SDK
-        # never advertises any tool to the model.  The permission check in
-        # `_wrap_tool` is a UI-level safety net — real enforcement has to
-        # happen at the SDK boundary, otherwise a model in strict mode can
-        # still emit tool_calls that the runtime executes silently.
-        if self._mode == "strict":
-            tools = []
-        else:
-            tools = [self._wrap_tool(t) for t in self._tools]
+        # Strict mode only wraps tools when we're actually going to use
+        # them (ask/auto path).  The strict branch below skips tool
+        # plumbing entirely and calls ``model.respond()`` — the SDK
+        # refuses ``model.act(tools=[])`` so an empty-list hack is not
+        # viable enforcement (#99).
+        tools = [self._wrap_tool(t) for t in self._tools] if self._mode != "strict" else []
 
         stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
@@ -1073,18 +1071,42 @@ class Agent:
                 await asyncio.sleep(0.1)
 
         keepalive = asyncio.create_task(_keepalive())
+        act_result: Any = None
+        respond_result: Any = None
+        strict_start: float | None = None
         try:
-            act_result = await model.act(
-                chat,
-                tools=tools,
-                config=self._inference_config if self._inference_config else None,
-                on_message=_on_message,
-                on_prediction_completed=_on_prediction_completed,
-                on_prediction_fragment=_on_fragment,
-            )
+            if self._mode == "strict":
+                # Strict mode (#99): use ``model.respond()`` — the pure
+                # chat primitive — so the model never sees any tool
+                # schema.  ``model.act(tools=[])`` raises
+                # ``LMStudioValueError`` and is not a valid enforcement
+                # path.  ``respond()`` supports the same callback shape
+                # so the spinner/stats machinery is reused unchanged.
+                strict_start = time.monotonic()
+                respond_result = await model.respond(
+                    chat,
+                    config=self._inference_config if self._inference_config else None,
+                    on_message=_on_message,
+                    on_prediction_fragment=_on_fragment,
+                )
+            else:
+                act_result = await model.act(
+                    chat,
+                    tools=tools,
+                    config=self._inference_config if self._inference_config else None,
+                    on_message=_on_message,
+                    on_prediction_completed=_on_prediction_completed,
+                    on_prediction_fragment=_on_fragment,
+                )
         finally:
             stop_evt.set()
             await keepalive
+
+        # ``respond()`` returns a single ``PredictionResult`` with ``.stats``
+        # directly, whereas ``act()`` fires ``_on_prediction_completed`` once
+        # per round.  Normalise so the downstream stats code runs identically.
+        if respond_result is not None and hasattr(respond_result, "stats"):
+            stats_capture.append(respond_result.stats)
 
         for s in stats_capture:
             self._session_prompt_tokens += getattr(s, "prompt_tokens_count", 0) or 0
@@ -1092,10 +1114,25 @@ class Agent:
         if stats_capture:
             self._last_prompt_tokens = getattr(stats_capture[-1], "prompt_tokens_count", 0) or 0
 
+        # ``respond()`` does not always invoke ``on_message`` for the final
+        # assistant turn — fall back to ``result.content`` so strict mode
+        # never shows "(no response)" when the model actually answered.
+        if not captured and respond_result is not None:
+            parts = getattr(respond_result, "content", None)
+            if isinstance(parts, list):
+                captured.append("".join(p.text for p in parts if hasattr(p, "text")))
+            elif parts is not None:
+                captured.append(str(parts))
+
         response_text = captured[-1] if captured else "(no response)"
         chat.add_assistant_response(response_text)
         self._turn_count += 1
-        elapsed = getattr(act_result, "total_time_seconds", None)
+        if act_result is not None:
+            elapsed = getattr(act_result, "total_time_seconds", None)
+        elif strict_start is not None:
+            elapsed = time.monotonic() - strict_start
+        else:
+            elapsed = None
         return response_text, _build_stats_line(stats_capture, elapsed)
 
     # ------------------------------------------------------------------

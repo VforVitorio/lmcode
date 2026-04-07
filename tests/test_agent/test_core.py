@@ -120,33 +120,64 @@ async def test_run_turn_adds_to_chat_history() -> None:
     assert agent._chat is not None
 
 
-@pytest.mark.asyncio
-async def test_run_turn_strict_mode_sends_empty_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Strict mode (#99) must pass ``tools=[]`` to ``model.act()``.
+def _make_mock_respond_model(response_text: str) -> MagicMock:
+    """Build a mock model whose respond() returns a PredictionResult-like object.
 
-    Enforced at the SDK boundary so the model cannot even see the tool
-    schemas, let alone emit a tool call.
+    Mirrors :func:`_make_mock_model` but for the strict-mode path that
+    uses ``model.respond()`` instead of ``model.act()``.
+    """
+
+    async def respond_side_effect(
+        history: object, on_message: object = None, **kwargs: object
+    ) -> MagicMock:
+        text_part = MagicMock()
+        text_part.text = response_text
+        result = MagicMock()
+        result.content = [text_part]
+        # Provide a minimal stats stub so _build_stats_line does not error.
+        result.stats = MagicMock(
+            prompt_tokens_count=10,
+            predicted_tokens_count=20,
+            tokens_per_second=50.0,
+        )
+        return result
+
+    mock = MagicMock()
+    mock.respond = AsyncMock(side_effect=respond_side_effect)
+    mock.act = AsyncMock()  # should never be awaited in strict mode
+    return mock
+
+
+@pytest.mark.asyncio
+async def test_run_turn_strict_mode_uses_respond_not_act() -> None:
+    """Strict mode (#99) must route through ``model.respond()`` — not ``act()``.
+
+    ``model.act()`` refuses ``tools=[]`` with ``LMStudioValueError``, so
+    strict has to take a completely different SDK path.  This test pins
+    that routing: respond is awaited once, act is never awaited.
     """
     agent = Agent()
     agent._mode = "strict"
-    mock_model = _make_mock_model("strict reply")
+    mock_model = _make_mock_respond_model("strict reply")
 
     with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
-        await agent._run_turn(mock_model, "hello in strict")
+        response, _stats = await agent._run_turn(mock_model, "hello in strict")
 
-    mock_model.act.assert_awaited_once()
-    call_kwargs = mock_model.act.await_args.kwargs
-    assert call_kwargs["tools"] == []
+    mock_model.respond.assert_awaited_once()
+    mock_model.act.assert_not_awaited()
+    assert response == "strict reply"
+    # Ensure ``tools`` was not passed to respond — respond() doesn't
+    # accept that kwarg at all.
+    call_kwargs = mock_model.respond.await_args.kwargs
+    assert "tools" not in call_kwargs
 
 
 @pytest.mark.asyncio
-async def test_run_turn_non_strict_modes_pass_tools() -> None:
-    """Ask and auto modes keep the full wrapped tool list (regression for #99).
+async def test_run_turn_non_strict_modes_use_act_with_tools() -> None:
+    """Ask and auto modes keep using ``model.act()`` with the full tool list.
 
-    The strict-mode fix must not silently strip tools from the other
-    permission modes.
+    Regression for #99 — the strict-mode fix must not silently reroute
+    the other permission modes through ``respond()``.
     """
     for mode in ("ask", "auto"):
         agent = Agent()
@@ -156,6 +187,7 @@ async def test_run_turn_non_strict_modes_pass_tools() -> None:
         with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
             await agent._run_turn(mock_model, "hi")
 
+        mock_model.act.assert_awaited_once()
         call_kwargs = mock_model.act.await_args.kwargs
         assert len(call_kwargs["tools"]) == len(agent._tools), (
             f"mode={mode} should pass all {len(agent._tools)} tools, "
