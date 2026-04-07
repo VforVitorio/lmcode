@@ -11,6 +11,7 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - **Strict mode now truly disables tools** — previously the `strict` permission mode label said "no tools — pure chat only" but the runtime still passed the full tool list to `model.act()`, so the model could happily emit tool calls and the runtime would execute them silently. Strict now routes through `model.respond()` — the pure-chat SDK primitive that has no tool concept at all — so the model never even sees a tool schema. (`model.act(tools=[])` is not a viable alternative: the SDK rejects it with `LMStudioValueError`.) (#99)
+- **Strict mode hard system prompt (second layer of defence)** — the SDK-level fix stops the model from emitting *real* tool calls, but cannot stop it from *fabricating* tool output in plain text (e.g. Qwen 7B happily replied "Here is the file content:" followed by invented code because the base prompt said "Always call `read_file` before describing file contents"). Strict now passes a *separate* `lms.Chat` seeded with a dedicated `_STRICT_SYSTEM_PROMPT` that explicitly forbids pretending to read files, fabricating output, or describing tool calls — while still listing what the model *can* do (review pasted code, answer general questions, rubber-duck debugging). `self._chat` is untouched so Tab-switching back to ask/auto keeps the base prompt and full history. (#99)
 
 ---
 

@@ -158,6 +158,85 @@ def _build_system_prompt() -> str:
     return base
 
 
+#: Hard system prompt for strict mode. The SDK-level fix (routing through
+#: ``model.respond()``) stops the model from *actually* calling tools, but
+#: cannot stop it from *fabricating* tool results in plain text — e.g.
+#: replying "Here is the file content:" followed by invented code. This
+#: prompt is the second layer of defence against that hallucination.
+_STRICT_SYSTEM_PROMPT = """\
+You are lmcode running in **STRICT MODE** — a pure-text chat with NO tools.
+
+<env>
+Working directory: {cwd}
+Platform: {platform}
+</env>
+
+## What you CANNOT do in this turn
+
+You have **no tools available**. You CANNOT:
+- read files or look at their contents
+- write, create, or modify any file
+- run shell commands
+- list directories
+- search the codebase with ripgrep or anything else
+- inspect the filesystem in any way
+
+There is no hidden tool you can invoke. There is no workaround.
+
+## Critical rules — violating these is a hallucination
+
+1. **Never pretend to have read a file.** If the user asks "what's in file
+   X" or "show me file X", you have NOT seen it. Do not invent its
+   contents. Do not reproduce code you "think" is probably there.
+
+2. **Never fabricate tool output.** Do not write phrases like "Here is the
+   content:" followed by code, or "Running that command gives:" followed
+   by output. You did not read anything. You did not run anything.
+
+3. **Never describe a tool call you are about to make.** There are no
+   tools to call. Do not say "I will read the file" — there is no read.
+
+4. **If the question genuinely needs filesystem access, say so honestly.**
+   Tell the user: "I'm in strict mode and have no filesystem access. Press
+   Tab to switch to ask or auto mode, or paste the relevant code snippet
+   directly into the chat and I'll help from there."
+
+## What you CAN do
+
+Strict mode is not "refuse everything" mode. You can still be useful:
+
+- Discuss, explain, or review code the user pastes directly into the chat.
+- Review code that appears earlier in this conversation's history.
+- Answer general programming and software-design questions from your own
+  knowledge.
+- Help the user plan, design, or reason through a problem conversationally.
+- Debug code the user shows you inline (rubber-duck style).
+- Write new code snippets from scratch when the user describes what they
+  want — just return them in a fenced code block for the user to copy.
+
+Be concise. Be honest. If you don't know, say so. If you need to see
+something that isn't in the conversation yet, ask for it.
+"""
+
+
+def _build_strict_system_prompt() -> str:
+    """Return the strict-mode system prompt with cwd/platform injected.
+
+    Also appends any ``LMCODE.md`` content so the model retains project
+    context while being locked out of tool use. Used only in strict mode;
+    ask/auto modes keep :func:`_build_system_prompt`.
+    """
+    import platform as _platform
+
+    cwd = pathlib.Path.cwd().as_posix()
+    plat = f"{_platform.system()} {_platform.release()}"
+    base = _STRICT_SYSTEM_PROMPT.format(cwd=cwd, platform=plat)
+    extra = read_lmcode_md()
+    if extra:
+        return f"{base}\n\n## Project context (LMCODE.md)\n\n{extra}"
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Tool verbose wrapper
 # ---------------------------------------------------------------------------
@@ -321,6 +400,32 @@ class Agent:
         if self._chat is None:
             self._chat = self._init_chat()
         return self._chat
+
+    def _build_strict_chat(self) -> lms.Chat:
+        """Return a fresh :class:`lms.Chat` seeded with the strict system prompt.
+
+        Replays ``self._raw_history`` into the new chat so the model still
+        sees all prior turns — only the system prompt differs.  Used only
+        by the strict branch of :meth:`_run_turn`; ``self._chat`` is left
+        untouched so switching back to ask/auto keeps the base prompt and
+        full persistent history intact.
+
+        Why a separate chat instead of swapping ``self._chat`` in place:
+
+        * Users Tab-cycle between modes mid-session; rewriting the system
+          prompt every switch would churn the persistent chat object and
+          risk SDK-side state drift.
+        * Strict mode is stateless at the prompt level — every strict
+          turn gets the same fresh hard prompt, no deriving from a
+          previous turn's state.
+        """
+        strict_chat = lms.Chat(_build_strict_system_prompt())
+        for role, msg in self._raw_history:
+            if role == "user":
+                strict_chat.add_user_message(msg)
+            else:
+                strict_chat.add_assistant_response(msg)
+        return strict_chat
 
     # ------------------------------------------------------------------
     # Slash-command handler
@@ -1088,9 +1193,20 @@ class Agent:
                 # ``LMStudioValueError`` and is not a valid enforcement
                 # path.  ``respond()`` supports the same callback shape
                 # so the spinner/stats machinery is reused unchanged.
+                #
+                # Second layer of defence: pass a *separate* chat
+                # object seeded with the strict system prompt. The SDK
+                # fix stops the model from emitting real tool_calls,
+                # but it cannot stop the model from *fabricating* tool
+                # output in plain text — e.g. "Here is the file
+                # content:" followed by invented code. The strict
+                # prompt explicitly forbids that. ``self._chat`` keeps
+                # the base prompt so switching back to ask/auto mode
+                # retains full history without a rebuild.
+                strict_chat = self._build_strict_chat()
                 strict_start = time.monotonic()
                 respond_result = await model.respond(
-                    chat,
+                    strict_chat,
                     config=self._inference_config if self._inference_config else None,
                     on_message=_on_message,
                     on_prediction_fragment=_on_fragment,
