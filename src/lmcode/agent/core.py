@@ -1022,8 +1022,14 @@ class Agent:
 
         tok_count: list[int] = [0]
 
-        def _on_fragment(fragment: Any, _round_index: int) -> None:
-            """Count generated tokens for the spinner label."""
+        def _on_fragment(fragment: Any, _round_index: int = 0) -> None:
+            """Count generated tokens for the spinner label.
+
+            ``_round_index`` has a default because ``model.act()`` invokes
+            this callback with two positional args (``fragment``, round)
+            while ``model.respond()`` (used in strict mode) invokes it
+            with one.  A single function serves both SDK paths.
+            """
             tok_count[0] += 1
 
         # Strict mode only wraps tools when we're actually going to use

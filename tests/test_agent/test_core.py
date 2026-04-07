@@ -124,17 +124,27 @@ def _make_mock_respond_model(response_text: str) -> MagicMock:
     """Build a mock model whose respond() returns a PredictionResult-like object.
 
     Mirrors :func:`_make_mock_model` but for the strict-mode path that
-    uses ``model.respond()`` instead of ``model.act()``.
+    uses ``model.respond()`` instead of ``model.act()``.  The side effect
+    invokes ``on_prediction_fragment`` with a **single** positional arg,
+    exactly like the real SDK does in ``json_api.py:1486`` — that shape
+    mismatch with ``act()``'s two-arg callback was the source of a
+    regression during #99 development.
     """
 
     async def respond_side_effect(
-        history: object, on_message: object = None, **kwargs: object
+        history: object,
+        on_message: object = None,
+        on_prediction_fragment: object = None,
+        **kwargs: object,
     ) -> MagicMock:
+        if callable(on_prediction_fragment):
+            fragment = MagicMock()
+            fragment.content = "tok "
+            on_prediction_fragment(fragment)  # <-- 1 arg, not 2
         text_part = MagicMock()
         text_part.text = response_text
         result = MagicMock()
         result.content = [text_part]
-        # Provide a minimal stats stub so _build_stats_line does not error.
         result.stats = MagicMock(
             prompt_tokens_count=10,
             predicted_tokens_count=20,
