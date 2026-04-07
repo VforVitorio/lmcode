@@ -120,6 +120,49 @@ async def test_run_turn_adds_to_chat_history() -> None:
     assert agent._chat is not None
 
 
+@pytest.mark.asyncio
+async def test_run_turn_strict_mode_sends_empty_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strict mode (#99) must pass ``tools=[]`` to ``model.act()``.
+
+    Enforced at the SDK boundary so the model cannot even see the tool
+    schemas, let alone emit a tool call.
+    """
+    agent = Agent()
+    agent._mode = "strict"
+    mock_model = _make_mock_model("strict reply")
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        await agent._run_turn(mock_model, "hello in strict")
+
+    mock_model.act.assert_awaited_once()
+    call_kwargs = mock_model.act.await_args.kwargs
+    assert call_kwargs["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_turn_non_strict_modes_pass_tools() -> None:
+    """Ask and auto modes keep the full wrapped tool list (regression for #99).
+
+    The strict-mode fix must not silently strip tools from the other
+    permission modes.
+    """
+    for mode in ("ask", "auto"):
+        agent = Agent()
+        agent._mode = mode
+        mock_model = _make_mock_model("ok")
+
+        with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+            await agent._run_turn(mock_model, "hi")
+
+        call_kwargs = mock_model.act.await_args.kwargs
+        assert len(call_kwargs["tools"]) == len(agent._tools), (
+            f"mode={mode} should pass all {len(agent._tools)} tools, "
+            f"got {len(call_kwargs['tools'])}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # _wrap_tool_verbose — positional-arg merging
 # ---------------------------------------------------------------------------

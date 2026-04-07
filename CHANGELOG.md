@@ -9,6 +9,9 @@ lmcode uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Strict mode now truly disables tools** — previously the `strict` permission mode label said "no tools — pure chat only" but the runtime still passed the full tool list to `model.act()`, so the model could happily emit tool calls and the runtime would execute them silently. Strict mode is now enforced at the SDK boundary: the tool list sent to `model.act()` is empty, so the model never even sees the tool schemas. (#99)
+
 ---
 
 ## [0.7.0] - 2026-03-26

@@ -1025,7 +1025,15 @@ class Agent:
             """Count generated tokens for the spinner label."""
             tok_count[0] += 1
 
-        tools = [self._wrap_tool(t) for t in self._tools]
+        # Strict mode enforcement (#99): send an empty tool list so the SDK
+        # never advertises any tool to the model.  The permission check in
+        # `_wrap_tool` is a UI-level safety net — real enforcement has to
+        # happen at the SDK boundary, otherwise a model in strict mode can
+        # still emit tool_calls that the runtime executes silently.
+        if self._mode == "strict":
+            tools = []
+        else:
+            tools = [self._wrap_tool(t) for t in self._tools]
 
         stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []

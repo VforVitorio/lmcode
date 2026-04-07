@@ -51,7 +51,7 @@ LM Studio   →   lmcode agent   →   your codebase
 - **Tool output panels** — syntax-highlighted file previews, side-by-side diff blocks for edits, IN/OUT panels for shell commands
 - **Ghost-text autocomplete** — fish-shell style: type `/h` → dim `elp` appears, Tab accepts
 - **Persistent history** — Ctrl+R and Up-arrow recall prompts across sessions (`~/.lmcode/history`)
-- **Permission modes** — `ask` (confirm each tool), `auto` (run freely), `strict` (read-only); Tab cycles between them
+- **Permission modes** — `ask` (confirm each tool), `auto` (run freely), `strict` (no tools — pure chat, enforced at SDK level); Tab cycles between them
 - **LMCODE.md** — per-repo context file injected into the system prompt
 - **/compact** — summarises conversation history via the model, resets the chat, and injects the summary as context
 - **/tokens** — session-wide prompt (↑) and generated (↓) token totals with context arc (`◔ 38%  14.2k / 32k tok`)
