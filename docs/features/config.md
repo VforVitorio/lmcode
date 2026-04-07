@@ -23,8 +23,9 @@ base_url = "http://localhost:1234"
 model = "auto"
 
 [agent]
-# Maximum number of agent loop iterations per run
-max_rounds = 50
+# Max tool-call rounds per turn. Applies to ask and auto modes.
+# Override for a session with --max-rounds N or LMCODE_AGENT__MAX_ROUNDS=N.
+max_rounds = 10
 
 # Whether to confirm before writing files
 confirm_writes = false
@@ -50,7 +51,7 @@ class LMStudioSettings(BaseSettings):
     model: str = "auto"
 
 class AgentSettings(BaseSettings):
-    max_rounds: int = 50
+    max_rounds: int = 10
     confirm_writes: bool = False
 
 class SessionSettings(BaseSettings):

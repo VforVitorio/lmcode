@@ -74,8 +74,15 @@ def test_agent_ensure_chat_returns_same_instance() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_model(response_text: str) -> MagicMock:
-    """Build a mock model whose act() calls on_message with a fake AssistantResponse."""
+def _make_mock_model(response_text: str, rounds: int = 1) -> MagicMock:
+    """Build a mock model whose act() calls on_message with a fake AssistantResponse.
+
+    The returned ``ActResult``-shaped mock has a real ``rounds`` int
+    (default ``1``, well below the default ``max_rounds=10`` cap) so
+    the post-act limit check in :meth:`Agent._run_turn` does not crash
+    on a ``MagicMock >= int`` comparison. Pass ``rounds=N`` to simulate
+    a turn that used all N rounds for the limit-warning test.
+    """
 
     async def act_side_effect(
         chat: object, tools: object, on_message: object = None, **kwargs: object
@@ -88,7 +95,12 @@ def _make_mock_model(response_text: str) -> MagicMock:
             msg.role = "assistant"
             msg.tool_calls = None
             on_message(msg)
-        return MagicMock()
+        # Return an ActResult-shaped mock with concrete numeric fields so
+        # `getattr(result, "rounds", 0) >= max_prediction_rounds` works.
+        result = MagicMock()
+        result.rounds = rounds
+        result.total_time_seconds = 0.1
+        return result
 
     mock = MagicMock()
     mock.act = AsyncMock(side_effect=act_side_effect)
@@ -292,6 +304,154 @@ async def test_run_turn_non_strict_modes_use_act_with_tools() -> None:
             f"mode={mode} should pass all {len(agent._tools)} tools, "
             f"got {len(call_kwargs['tools'])}"
         )
+
+
+# ---------------------------------------------------------------------------
+# max_rounds safety boundary (#97)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_turn_passes_max_rounds_to_act() -> None:
+    """``max_prediction_rounds`` must flow from the agent config into ``model.act()``.
+
+    Pins the config→SDK plumbing: if someone removes the kwarg from the
+    ``act()`` call, auto mode is once again unbounded and can loop
+    forever — the exact bug #97 was filed to fix.
+    """
+    agent = Agent()
+    agent._mode = "auto"
+    mock_model = _make_mock_model("ok")
+
+    # Patch get_settings so the test does not depend on ~/.config state.
+    mock_settings = MagicMock()
+    mock_settings.agent.max_rounds = 7
+    mock_settings.agent.max_file_bytes = 100_000
+    with (
+        patch("lmcode.agent.core.read_lmcode_md", return_value=None),
+        patch("lmcode.agent.core.get_settings", return_value=mock_settings),
+    ):
+        await agent._run_turn(mock_model, "hi")
+
+    call_kwargs = mock_model.act.await_args.kwargs
+    assert call_kwargs["max_prediction_rounds"] == 7
+
+
+@pytest.mark.asyncio
+async def test_run_turn_max_rounds_none_when_config_zero() -> None:
+    """A non-positive ``max_rounds`` disables the cap (passes ``None`` to the SDK).
+
+    Users who explicitly set ``max_rounds = 0`` in config.toml are opting
+    out of the safety boundary; we must not send ``0`` to the SDK because
+    ``model.act()`` rejects values < 1 with ``LMStudioValueError``.
+    """
+    agent = Agent()
+    agent._mode = "auto"
+    mock_model = _make_mock_model("ok")
+
+    mock_settings = MagicMock()
+    mock_settings.agent.max_rounds = 0
+    mock_settings.agent.max_file_bytes = 100_000
+    with (
+        patch("lmcode.agent.core.read_lmcode_md", return_value=None),
+        patch("lmcode.agent.core.get_settings", return_value=mock_settings),
+    ):
+        await agent._run_turn(mock_model, "hi")
+
+    call_kwargs = mock_model.act.await_args.kwargs
+    assert call_kwargs["max_prediction_rounds"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_turn_flags_limit_reached_when_rounds_equal_cap() -> None:
+    """Well-behaved model case: ``ActResult.rounds == cap`` → set the flag.
+
+    Even when the SDK closes the loop cleanly (model gave up tools on the
+    final round and produced a text answer), reaching the cap means the
+    task was likely truncated. ``self._last_turn_limit_reached`` must be
+    set so ``run()`` prints the warning.
+    """
+    agent = Agent()
+    agent._mode = "auto"
+    mock_model = _make_mock_model("done", rounds=5)
+
+    mock_settings = MagicMock()
+    mock_settings.agent.max_rounds = 5
+    mock_settings.agent.max_file_bytes = 100_000
+    with (
+        patch("lmcode.agent.core.read_lmcode_md", return_value=None),
+        patch("lmcode.agent.core.get_settings", return_value=mock_settings),
+    ):
+        await agent._run_turn(mock_model, "hi")
+
+    assert agent._last_turn_limit_reached is True
+
+
+@pytest.mark.asyncio
+async def test_run_turn_flags_limit_reached_on_final_round_error() -> None:
+    """Stubborn model case: SDK raises ``LMStudioPredictionError`` on the final round.
+
+    When the model ignores the tools-disabled signal on the final round
+    and emits a tool_call anyway, the SDK raises unconditionally with a
+    message containing ``"final prediction round"``. ``_run_turn`` must
+    catch this *specific* error, set the limit flag, and NOT let it
+    bubble to the ``run()`` top-level handler (which catches
+    ``LMStudioServerError`` — the parent class — and would misinterpret
+    the crash as a server disconnect).
+    """
+    import lmstudio as lms
+
+    agent = Agent()
+    agent._mode = "auto"
+
+    async def _raise_final_round(
+        chat: object, tools: object, on_message: object = None, **kwargs: object
+    ) -> None:
+        raise lms.LMStudioPredictionError("Model requested tool use on final prediction round.")
+
+    mock_model = MagicMock()
+    mock_model.act = AsyncMock(side_effect=_raise_final_round)
+
+    mock_settings = MagicMock()
+    mock_settings.agent.max_rounds = 3
+    mock_settings.agent.max_file_bytes = 100_000
+    with (
+        patch("lmcode.agent.core.read_lmcode_md", return_value=None),
+        patch("lmcode.agent.core.get_settings", return_value=mock_settings),
+    ):
+        # Must NOT raise — the error is caught and converted to a flag.
+        await agent._run_turn(mock_model, "loop forever please")
+
+    assert agent._last_turn_limit_reached is True
+
+
+@pytest.mark.asyncio
+async def test_run_turn_reraises_unrelated_prediction_error() -> None:
+    """A prediction error that is NOT the final-round case must propagate.
+
+    The catch in ``_run_turn`` is narrow on purpose — matching only the
+    SDK's ``"final prediction round"`` marker. Any other
+    ``LMStudioPredictionError`` (malformed tool schema, invalid
+    response format, etc.) is a real bug the user needs to see.
+    """
+    import lmstudio as lms
+
+    agent = Agent()
+    agent._mode = "auto"
+
+    async def _raise_other(
+        chat: object, tools: object, on_message: object = None, **kwargs: object
+    ) -> None:
+        raise lms.LMStudioPredictionError("something else went wrong")
+
+    mock_model = MagicMock()
+    mock_model.act = AsyncMock(side_effect=_raise_other)
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        with pytest.raises(lms.LMStudioPredictionError, match="something else"):
+            await agent._run_turn(mock_model, "hi")
+
+    assert agent._last_turn_limit_reached is False
 
 
 # ---------------------------------------------------------------------------
