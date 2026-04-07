@@ -42,7 +42,8 @@ def main(
     if ctx.invoked_subcommand is None:
         from lmcode.cli.chat import chat
 
-        chat(model="auto", max_rounds=50)
+        # max_rounds=None → use agent.max_rounds from config.toml / env var
+        chat(model="auto", max_rounds=None)
 
 
 # ---------------------------------------------------------------------------

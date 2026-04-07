@@ -32,7 +32,15 @@ class LMStudioSettings(BaseSettings):
 class AgentSettings(BaseSettings):
     """Runtime behaviour settings for the agent loop."""
 
-    max_rounds: int = 50
+    #: Maximum number of tool-call rounds inside a single ``model.act()``
+    #: invocation.  Passed to the LM Studio SDK as ``max_prediction_rounds``.
+    #: 10 is the sweet spot for Qwen 7B: enough headroom for multi-file
+    #: edits, tight enough to stop runaway loops before they burn context.
+    #: Raise via ``LMCODE_AGENT__MAX_ROUNDS=N`` or ``agent.max_rounds`` in
+    #: ``config.toml``, or pass ``--max-rounds N`` on the CLI for a single
+    #: session.  Applies to ask and auto modes; strict mode routes through
+    #: ``model.respond()`` which has no round concept.
+    max_rounds: int = 10
     permission_mode: Literal["ask", "auto", "strict"] = "ask"
     timeout_seconds: int = 30
     max_file_bytes: int = 100_000  # ~100 KB; see issue #2 for token-aware improvement

@@ -75,6 +75,17 @@ from lmcode.ui.status import (
 # Spinner / tips constants
 # ---------------------------------------------------------------------------
 
+#: Substring found in :class:`lms.LMStudioPredictionError` when the model
+#: requests a tool call on the final round that was capped by
+#: ``max_prediction_rounds``.  The SDK raises unconditionally in that case
+#: (our ``handle_invalid_tool_request`` callback can only override the
+#: message), so we match on this marker to convert the crash into a
+#: graceful "limit reached" warning instead of letting the run() loop's
+#: broader ``LMStudioServerError`` catch mistake it for a disconnect.
+#: Source of truth: ``lmstudio.async_api.AsyncLLM.act`` — the string is
+#: literally ``"Model requested tool use on final prediction round."``.
+_MAX_ROUNDS_ERR_MARKER: str = "final prediction round"
+
 #: Rich spinner style used during model inference.
 _SPINNER: str = "circleHalves"
 
@@ -382,6 +393,11 @@ class Agent:
         self._show_stats: bool = get_settings().ui.show_stats
         self._always_allowed_tools: set[str] = set()
         self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
+        # Set by _run_turn when ``max_prediction_rounds`` was hit this turn
+        # (either the SDK raised LMStudioPredictionError on the final round,
+        # or ActResult.rounds reached the configured cap). run() reads this
+        # after _run_turn returns to print an inline warning to the user.
+        self._last_turn_limit_reached: bool = False
         # Set by _wrap_tool when the user rejects a tool call and types a
         # redirect instruction.  run() detects this after the turn ends and
         # feeds the instruction back as a brand-new user message.
@@ -1185,6 +1201,13 @@ class Agent:
         act_result: Any = None
         respond_result: Any = None
         strict_start: float | None = None
+        # Reset the flag at the start of every turn. run() reads it after
+        # _run_turn returns to decide whether to print the limit warning.
+        self._last_turn_limit_reached = False
+        # Pull max_rounds here (not later) so tests can patch
+        # get_settings() once and see a single call. None disables the cap.
+        max_rounds = get_settings().agent.max_rounds
+        max_prediction_rounds: int | None = max_rounds if max_rounds and max_rounds > 0 else None
         try:
             if self._mode == "strict":
                 # Strict mode (#99): use ``model.respond()`` — the pure
@@ -1212,17 +1235,42 @@ class Agent:
                     on_prediction_fragment=_on_fragment,
                 )
             else:
-                act_result = await model.act(
-                    chat,
-                    tools=tools,
-                    config=self._inference_config if self._inference_config else None,
-                    on_message=_on_message,
-                    on_prediction_completed=_on_prediction_completed,
-                    on_prediction_fragment=_on_fragment,
-                )
+                try:
+                    act_result = await model.act(
+                        chat,
+                        tools=tools,
+                        max_prediction_rounds=max_prediction_rounds,
+                        config=self._inference_config if self._inference_config else None,
+                        on_message=_on_message,
+                        on_prediction_completed=_on_prediction_completed,
+                        on_prediction_fragment=_on_fragment,
+                    )
+                except lms.LMStudioPredictionError as e:
+                    # Max-rounds hit with a stubborn model: the SDK disabled
+                    # tools on the final round, the model still emitted a
+                    # tool_call, and the SDK raised unconditionally. Convert
+                    # that into a graceful limit-reached signal so run()
+                    # prints a warning instead of the run() top-level catch
+                    # mistaking it for a server disconnect (LMStudioServerError
+                    # is a *parent* of LMStudioPredictionError).
+                    if _MAX_ROUNDS_ERR_MARKER in str(e):
+                        self._last_turn_limit_reached = True
+                    else:
+                        raise
         finally:
             stop_evt.set()
             await keepalive
+
+        # Well-behaved model case: the SDK forced a tool-free final round and
+        # the model produced a normal text response, but rounds == the cap
+        # still means the task likely got truncated. Flag it so the user
+        # knows why the answer might feel incomplete.
+        if (
+            act_result is not None
+            and max_prediction_rounds is not None
+            and getattr(act_result, "rounds", 0) >= max_prediction_rounds
+        ):
+            self._last_turn_limit_reached = True
 
         # ``respond()`` returns a single ``PredictionResult`` with ``.stats``
         # directly, whereas ``act()`` fires ``_on_prediction_completed`` once
@@ -1398,6 +1446,18 @@ class Agent:
                                 f"[{TEXT_MUTED}] — run /compact to summarise "
                                 f"the conversation[/]"
                             )
+
+                    if self._last_turn_limit_reached:
+                        cap = get_settings().agent.max_rounds
+                        console.print(
+                            f"\n[{WARNING}]agent stopped after {cap} rounds[/]"
+                            f"[{TEXT_MUTED}] — raise the limit with "
+                            f"LMCODE_AGENT__MAX_ROUNDS=N, set "
+                            f"agent.max_rounds in config, or pass "
+                            f"--max-rounds N on the CLI. "
+                            f"Type to continue the conversation.[/]"
+                        )
+
                     console.print(Rule(style=f"dim {ACCENT}"))
 
                     # If the user rejected a tool call with redirect

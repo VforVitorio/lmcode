@@ -385,10 +385,19 @@ def _exit_no_model() -> None:
 @app.callback(invoke_without_command=True)
 def chat(
     model: str = typer.Option("auto", "--model", "-m", help="Model ID (default: auto-detect)."),
-    max_rounds: int = typer.Option(50, "--max-rounds", help="Maximum agent loop iterations."),
+    max_rounds: int | None = typer.Option(
+        None,
+        "--max-rounds",
+        help="Max tool-call rounds per turn (overrides agent.max_rounds in config).",
+    ),
 ) -> None:
     """Start an interactive coding agent session in the current directory."""
     settings = get_settings()
+    if max_rounds is not None:
+        # CLI flag overrides config.toml / env var for this session only.
+        # The Agent reads get_settings().agent.max_rounds at the start of
+        # every turn, so mutating it here is enough — no re-init needed.
+        settings.agent.max_rounds = max_rounds
     connected, detected_model = _probe_lmstudio()
 
     if not connected:
