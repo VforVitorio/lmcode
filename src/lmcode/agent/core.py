@@ -68,6 +68,7 @@ from lmcode.ui.status import (
     MODES,
     build_prompt,
     build_status_line,
+    mode_color,
     next_mode,
 )
 
@@ -393,6 +394,10 @@ class Agent:
         self._show_stats: bool = get_settings().ui.show_stats
         self._always_allowed_tools: set[str] = set()
         self._inference_config: dict[str, Any] = {}  # passed as config= to model.act()
+        # True once the first-time auto-mode warning has been shown.  The
+        # warning fires the first time the user Tab-cycles into auto mode
+        # during a session — never again, even after cycling away and back.
+        self._auto_warned: bool = False
         # Set by _run_turn when ``max_prediction_rounds`` was hit this turn
         # (either the SDK raised LMStudioPredictionError on the final round,
         # or ActResult.rounds reached the configured cap). run() reads this
@@ -697,6 +702,7 @@ class Agent:
         status_rows: list[tuple[str, str]] = [
             ("model", self._model_display or "(none)"),
             ("mode", self._mode),
+            ("max rounds", str(get_settings().agent.max_rounds)),
             ("temperature", temp_display),
             ("verbose", "on" if self._verbose else "off"),
             ("tips", "on" if self._show_tips else "off"),
@@ -712,6 +718,26 @@ class Agent:
             row.append(value)
             console.print(row)
         console.print()
+
+    def _print_auto_warning(self) -> None:
+        """Print the first-time auto-mode caution and set :attr:`_auto_warned`.
+
+        Called from ``_cycle_mode`` inside :meth:`run` via ``run_in_terminal``
+        the first time the user Tab-cycles into ``auto`` mode during a
+        session.  The flag prevents re-printing on subsequent cycles.
+        Intended to be a one-line amber hint that matches the style used
+        for the context-window and max-rounds warnings.
+        """
+        if self._auto_warned:
+            return
+        self._auto_warned = True
+        cap = get_settings().agent.max_rounds
+        console.print(
+            f"[{WARNING}]auto mode[/]"
+            f"[{TEXT_MUTED}] — tools run without asking, "
+            f"up to {cap} rounds per turn. "
+            f"Ctrl+C stops a running turn.[/]"
+        )
 
     # ------------------------------------------------------------------
     # /compact
@@ -1153,6 +1179,19 @@ class Agent:
             """
             tok_count[0] += 1
 
+        # Current round (1-indexed) as reported by ``on_round_start``.
+        # Zero means no round has started yet (pre-first-round thinking)
+        # or the mode is strict (``model.respond()`` has no round concept).
+        current_round: list[int] = [0]
+
+        def _on_round_start(round_index: int) -> None:
+            """Update the spinner round counter — auto mode displays ``N/M``.
+
+            ``round_index`` is 0-based in the SDK, so we store ``+1`` to
+            match the human-friendly ``round 3/10`` format.
+            """
+            current_round[0] = round_index + 1
+
         # Strict mode only wraps tools when we're actually going to use
         # them (ask/auto path).  The strict branch below skips tool
         # plumbing entirely and calls ``model.respond()`` — the SDK
@@ -1163,11 +1202,26 @@ class Agent:
         stop_evt = asyncio.Event()
         shuffled_tips = random.sample(_TIPS, len(_TIPS)) if self._show_tips else []
 
+        # Reset the per-turn limit-reached flag here so it's defined before
+        # any early return inside the ``try`` block.  run() reads it after
+        # _run_turn returns to decide whether to print the limit warning.
+        self._last_turn_limit_reached = False
+        # Pull max_rounds here (not later) so tests can patch
+        # get_settings() once and see a single call. None disables the cap.
+        # Assigned before the keepalive task is created so the closure
+        # below sees a bound cell when it first runs.
+        max_rounds = get_settings().agent.max_rounds
+        max_prediction_rounds: int | None = max_rounds if max_rounds and max_rounds > 0 else None
+
         async def _keepalive() -> None:
             """Update the spinner label every 100 ms; animate dots; rotate tips every ~8 s.
 
             Runs on the main event loop alongside ``model.act()``.  Gets CPU time
             whenever the SDK yields back to the loop during async HTTP prefill.
+            The spinner colour tracks the current mode (orange=ask, blue=auto,
+            red=strict) so the active permission mode is visible at a glance
+            without reading the prompt line.  In auto mode the label also
+            includes a ``round N/M`` counter driven by ``on_round_start``.
             """
             tip_idx = 0
             dot_idx = 0
@@ -1190,7 +1244,14 @@ class Agent:
                         )
                     else:
                         label = f" {base}"
-                    rows: list[Any] = [Spinner(_SPINNER, text=label, style=ACCENT)]
+                    if (
+                        self._mode == "auto"
+                        and current_round[0] > 0
+                        and max_prediction_rounds is not None
+                    ):
+                        label = f"{label}  ·  round {current_round[0]}/{max_prediction_rounds}"
+                    spinner_color = mode_color(self._mode)
+                    rows: list[Any] = [Spinner(_SPINNER, text=label, style=spinner_color)]
                     if shuffled_tips:
                         rows.append(Text(f"  {shuffled_tips[tip_idx]}", style=f"dim {ACCENT}"))
                     live.update(RenderGroup(*rows))
@@ -1201,13 +1262,6 @@ class Agent:
         act_result: Any = None
         respond_result: Any = None
         strict_start: float | None = None
-        # Reset the flag at the start of every turn. run() reads it after
-        # _run_turn returns to decide whether to print the limit warning.
-        self._last_turn_limit_reached = False
-        # Pull max_rounds here (not later) so tests can patch
-        # get_settings() once and see a single call. None disables the cap.
-        max_rounds = get_settings().agent.max_rounds
-        max_prediction_rounds: int | None = max_rounds if max_rounds and max_rounds > 0 else None
         try:
             if self._mode == "strict":
                 # Strict mode (#99): use ``model.respond()`` — the pure
@@ -1242,6 +1296,7 @@ class Agent:
                         max_prediction_rounds=max_prediction_rounds,
                         config=self._inference_config if self._inference_config else None,
                         on_message=_on_message,
+                        on_round_start=_on_round_start,
                         on_prediction_completed=_on_prediction_completed,
                         on_prediction_fragment=_on_fragment,
                     )
@@ -1321,8 +1376,18 @@ class Agent:
         settings = get_settings()
 
         def _cycle_mode() -> None:
-            """Advance to the next mode in-place (prompt redraws via invalidate)."""
+            """Advance to the next mode in-place (prompt redraws via invalidate).
+
+            The first time the user cycles into ``auto`` in a given session,
+            schedule a one-shot amber warning via prompt-toolkit's
+            :func:`run_in_terminal` so the hint prints cleanly above the
+            live prompt without tearing the ghost-text completion layer.
+            """
             self._mode = next_mode(self._mode)
+            if self._mode == "auto" and not self._auto_warned:
+                from prompt_toolkit.application import run_in_terminal
+
+                run_in_terminal(self._print_auto_warning)
 
         session = make_session(cycle_mode=_cycle_mode)
 
@@ -1387,7 +1452,7 @@ class Agent:
                         continue
 
                     initial: Any = RenderGroup(
-                        Spinner(_SPINNER, text=" thinking.", style=ACCENT),
+                        Spinner(_SPINNER, text=" thinking.", style=mode_color(self._mode)),
                     )
                     self._raw_history.append(("user", stripped))
                     _interrupted = False

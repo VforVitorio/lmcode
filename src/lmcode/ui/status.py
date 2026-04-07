@@ -31,6 +31,16 @@ def next_mode(current: str) -> str:
     return MODES[(idx + 1) % len(MODES)]
 
 
+def mode_color(mode: str) -> str:
+    """Return the hex colour associated with *mode*, falling back to muted grey.
+
+    The same palette is used by the ``[mode]`` indicator in the prompt and by
+    the in-turn spinner inside the agent loop, so the two always agree:
+    orange = ask, blue = auto, red = strict.
+    """
+    return _MODE_COLORS.get(mode, _MUTED)
+
+
 def build_status_line(model: str) -> str:
     """Return a Rich markup string shown once after connecting to LM Studio.
 

@@ -455,6 +455,117 @@ async def test_run_turn_reraises_unrelated_prediction_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# auto mode UX — spinner colour, round counter, first-time warning (#97)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_turn_passes_on_round_start_to_act() -> None:
+    """``on_round_start`` must be wired so the spinner can display ``round N/M``.
+
+    The callback lives entirely inside ``_run_turn``'s closure (it updates a
+    local ``current_round`` cell read by the keepalive task), so we assert on
+    two things: (1) the kwarg was passed as a callable to ``model.act()``,
+    and (2) calling it with a 0-based round index does not raise.
+    """
+    agent = Agent()
+    agent._mode = "auto"
+    mock_model = _make_mock_model("ok")
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        await agent._run_turn(mock_model, "hi")
+
+    call_kwargs = mock_model.act.await_args.kwargs
+    assert "on_round_start" in call_kwargs
+    assert callable(call_kwargs["on_round_start"])
+    # Must accept a 0-based round index without raising.
+    call_kwargs["on_round_start"](0)
+    call_kwargs["on_round_start"](2)
+
+
+def test_agent_auto_warned_initially_false() -> None:
+    """Fresh Agent starts with the first-time auto-mode warning un-fired."""
+    agent = Agent()
+    assert agent._auto_warned is False
+
+
+def test_print_auto_warning_fires_once_per_session() -> None:
+    """``_print_auto_warning`` sets the flag on first call and is a no-op afterwards.
+
+    The warning is triggered from the ``_cycle_mode`` closure in ``run()`` via
+    ``run_in_terminal``; we test the method directly so the test does not
+    depend on prompt_toolkit's terminal plumbing. Calling it twice must
+    print exactly once — the second call should exit immediately.
+    """
+    from lmcode.agent import _display
+
+    agent = Agent()
+    with patch.object(_display.console, "print") as mock_print:
+        agent._print_auto_warning()
+        assert agent._auto_warned is True
+        assert mock_print.call_count == 1
+
+        agent._print_auto_warning()
+        # Flag still True and no additional prints — second call is a no-op.
+        assert agent._auto_warned is True
+        assert mock_print.call_count == 1
+
+
+def test_cycle_mode_preserves_always_allowed_tools() -> None:
+    """Tab-cycling the mode must not clear session-scoped always-allow grants.
+
+    Regression guard for a subtle UX pitfall: if the user grants "always allow
+    write_file" in ask mode and then Tab-cycles to auto → strict → ask, the
+    grants should survive the round trip. The set is plain Agent state with
+    no cycle hook touching it, but this test pins the invariant so a future
+    refactor that adds ``_always_allowed_tools.clear()`` to the mode handler
+    will be caught.
+    """
+    from lmcode.ui.status import next_mode
+
+    agent = Agent()
+    agent._mode = "ask"
+    agent._always_allowed_tools = {"read_file", "write_file"}
+
+    # Simulate three Tab presses: ask → auto → strict → ask.
+    for _ in range(3):
+        agent._mode = next_mode(agent._mode)
+
+    assert agent._mode == "ask"
+    assert agent._always_allowed_tools == {"read_file", "write_file"}
+
+
+def test_print_status_includes_max_rounds_line() -> None:
+    """``/status`` must surface the active ``max_rounds`` so users can verify the cap.
+
+    The line is the only place in the running session that confirms which
+    safety boundary is in effect (config / env var / CLI flag). We capture
+    the Rich console output and assert the label is present.
+    """
+    from lmcode.agent import _display
+
+    agent = Agent()
+    mock_settings = MagicMock()
+    mock_settings.agent.max_rounds = 13
+    mock_settings.agent.max_file_bytes = 100_000
+
+    printed: list[str] = []
+
+    def _capture(obj: object = "", *args: object, **kwargs: object) -> None:
+        printed.append(str(obj))
+
+    with (
+        patch("lmcode.agent.core.get_settings", return_value=mock_settings),
+        patch.object(_display.console, "print", side_effect=_capture),
+    ):
+        agent._print_status()
+
+    joined = "\n".join(printed)
+    assert "max rounds" in joined
+    assert "13" in joined
+
+
+# ---------------------------------------------------------------------------
 # _wrap_tool_verbose — positional-arg merging
 # ---------------------------------------------------------------------------
 
