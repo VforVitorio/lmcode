@@ -120,6 +120,180 @@ async def test_run_turn_adds_to_chat_history() -> None:
     assert agent._chat is not None
 
 
+def _make_mock_respond_model(response_text: str) -> MagicMock:
+    """Build a mock model whose respond() returns a PredictionResult-like object.
+
+    Mirrors :func:`_make_mock_model` but for the strict-mode path that
+    uses ``model.respond()`` instead of ``model.act()``.  The side effect
+    invokes ``on_prediction_fragment`` with a **single** positional arg,
+    exactly like the real SDK does in ``json_api.py:1486`` — that shape
+    mismatch with ``act()``'s two-arg callback was the source of a
+    regression during #99 development.
+    """
+
+    async def respond_side_effect(
+        history: object,
+        on_message: object = None,
+        on_prediction_fragment: object = None,
+        **kwargs: object,
+    ) -> MagicMock:
+        if callable(on_prediction_fragment):
+            fragment = MagicMock()
+            fragment.content = "tok "
+            on_prediction_fragment(fragment)  # <-- 1 arg, not 2
+        text_part = MagicMock()
+        text_part.text = response_text
+        result = MagicMock()
+        result.content = [text_part]
+        result.stats = MagicMock(
+            prompt_tokens_count=10,
+            predicted_tokens_count=20,
+            tokens_per_second=50.0,
+        )
+        return result
+
+    mock = MagicMock()
+    mock.respond = AsyncMock(side_effect=respond_side_effect)
+    mock.act = AsyncMock()  # should never be awaited in strict mode
+    return mock
+
+
+@pytest.mark.asyncio
+async def test_run_turn_strict_mode_uses_respond_not_act() -> None:
+    """Strict mode (#99) must route through ``model.respond()`` — not ``act()``.
+
+    ``model.act()`` refuses ``tools=[]`` with ``LMStudioValueError``, so
+    strict has to take a completely different SDK path.  This test pins
+    that routing: respond is awaited once, act is never awaited.
+    """
+    agent = Agent()
+    agent._mode = "strict"
+    mock_model = _make_mock_respond_model("strict reply")
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        response, _stats = await agent._run_turn(mock_model, "hello in strict")
+
+    mock_model.respond.assert_awaited_once()
+    mock_model.act.assert_not_awaited()
+    assert response == "strict reply"
+    # Ensure ``tools`` was not passed to respond — respond() doesn't
+    # accept that kwarg at all.
+    call_kwargs = mock_model.respond.await_args.kwargs
+    assert "tools" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_run_turn_strict_mode_uses_strict_system_prompt() -> None:
+    """Strict mode must pass a chat seeded with the hard strict system prompt.
+
+    The SDK-level fix (routing through ``model.respond()``) stops the
+    model from emitting *real* tool calls, but it cannot stop it from
+    *fabricating* tool output in plain text — e.g. replying with "Here
+    is the file content:" followed by invented code.  The strict
+    system prompt is the second layer of defence that forbids that
+    behaviour explicitly.
+
+    This test pins three properties of the strict branch:
+
+    1. ``_build_strict_system_prompt`` is actually invoked.
+    2. The chat passed to ``respond()`` is a *separate* object from
+       ``agent._chat`` — so switching back to ask/auto keeps the base
+       prompt intact.
+    3. The chat passed to ``respond()`` has a system message that
+       contains the strict-mode marker.
+    """
+    agent = Agent()
+    agent._mode = "strict"
+    # run() normally appends to _raw_history before calling _run_turn; mirror
+    # that here so _build_strict_chat has the current user message to replay.
+    agent._raw_history = [("user", "what's in calculator.py?")]
+    mock_model = _make_mock_respond_model("strict reply")
+
+    with (
+        patch("lmcode.agent.core.read_lmcode_md", return_value=None),
+        patch(
+            "lmcode.agent.core._build_strict_system_prompt",
+            wraps=__import__(
+                "lmcode.agent.core", fromlist=["_build_strict_system_prompt"]
+            )._build_strict_system_prompt,
+        ) as mock_builder,
+    ):
+        await agent._run_turn(mock_model, "what's in calculator.py?")
+
+    mock_builder.assert_called_once()
+
+    # The chat passed to respond() must not be the persistent chat.
+    sdk_chat = mock_model.respond.await_args.args[0]
+    assert sdk_chat is not agent._chat, (
+        "strict mode must build a *separate* chat so self._chat retains "
+        "the base system prompt for when the user switches back to ask/auto"
+    )
+
+    # The strict chat's system message must contain the hard marker.
+    system_msg = sdk_chat._messages[0]
+    system_text = "".join(p.text for p in system_msg.content if hasattr(p, "text"))
+    assert "STRICT MODE" in system_text, (
+        f"strict chat system prompt must contain 'STRICT MODE' marker, got:\n{system_text[:200]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_turn_strict_mode_replays_history_into_strict_chat() -> None:
+    """Prior turns in ``_raw_history`` must be replayed into the strict chat.
+
+    Switching to strict mode mid-conversation must not lobotomise the
+    model — it still needs to see what was said before so it can answer
+    contextually (e.g. "explain the function we just discussed").
+    """
+    agent = Agent()
+    agent._mode = "strict"
+    # Seed two completed turns before the strict request.
+    agent._raw_history = [
+        ("user", "earlier question"),
+        ("assistant", "earlier answer"),
+        ("user", "follow-up in strict"),  # the current turn (already recorded by run())
+    ]
+    mock_model = _make_mock_respond_model("strict follow-up reply")
+
+    with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+        await agent._run_turn(mock_model, "follow-up in strict")
+
+    sdk_chat = mock_model.respond.await_args.args[0]
+    # Expect: system + 3 history messages = 4 total.
+    roles = [m.__class__.__name__ for m in sdk_chat._messages]
+    assert roles[0] == "SystemPrompt"
+    assert len(sdk_chat._messages) == 4, (
+        f"strict chat should replay 3 history entries after system msg, got roles={roles}"
+    )
+    # The last user message must be the current one.
+    last = sdk_chat._messages[-1]
+    last_text = "".join(p.text for p in last.content if hasattr(p, "text"))
+    assert "follow-up in strict" in last_text
+
+
+@pytest.mark.asyncio
+async def test_run_turn_non_strict_modes_use_act_with_tools() -> None:
+    """Ask and auto modes keep using ``model.act()`` with the full tool list.
+
+    Regression for #99 — the strict-mode fix must not silently reroute
+    the other permission modes through ``respond()``.
+    """
+    for mode in ("ask", "auto"):
+        agent = Agent()
+        agent._mode = mode
+        mock_model = _make_mock_model("ok")
+
+        with patch("lmcode.agent.core.read_lmcode_md", return_value=None):
+            await agent._run_turn(mock_model, "hi")
+
+        mock_model.act.assert_awaited_once()
+        call_kwargs = mock_model.act.await_args.kwargs
+        assert len(call_kwargs["tools"]) == len(agent._tools), (
+            f"mode={mode} should pass all {len(agent._tools)} tools, "
+            f"got {len(call_kwargs['tools'])}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # _wrap_tool_verbose — positional-arg merging
 # ---------------------------------------------------------------------------
